@@ -6,6 +6,5 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public record OutboxProperties(
         int batchSize,
         int backoffCapSeconds,
-        long backlogWarnThreshold,
         int purgePublishedAfterDays
 ) {}

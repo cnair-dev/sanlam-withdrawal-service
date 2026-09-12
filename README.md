@@ -184,11 +184,6 @@ decides its status code, instead of silently becoming a 500.
 
 **RFC 7807 `ProblemDetail`**, not a bespoke error shape.
 
-**Virtual threads** for an I/O-bound request path — but the Hikari pool, not the
-thread count, is the real throughput ceiling, which is why it is bounded
-explicitly. Note the JDK 21 caveat: `synchronized` still pins a carrier thread
-until JEP 491 in JDK 24; this code uses none, though HikariCP historically does.
-
 **No circuit breaker.** During an SNS outage the per-row exponential backoff
 already suppresses doomed calls, and unlike a breaker it also handles poison
 messages. A breaker would add a dependency and a state machine without changing

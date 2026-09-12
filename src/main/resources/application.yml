@@ -7,10 +7,9 @@ spring:
     username: ${DB_USER:bank}
     password: ${DB_PASSWORD:bank}
     hikari:
-      # With virtual threads enabled the pool - not the thread count - is the real
-      # throughput ceiling: virtual threads let more requests WAIT cheaply, they do
-      # not let more run. Pool size is therefore the knob that matters, and it is
-      # bounded by what the database can actually service concurrently.
+      # The pool, not the servlet container's thread count, is the real throughput
+      # ceiling on this path: every request blocks on a connection. Sized to what the
+      # database can service concurrently rather than to expected request volume.
       maximum-pool-size: ${DB_POOL_SIZE:20}
       connection-timeout: 3000
       pool-name: withdrawal-pool
@@ -28,16 +27,6 @@ spring:
       # callers start seeing connection timeouts instead of a useful status code.
       # Surfaces as SQLSTATE 55P03 -> CannotAcquireLockException -> 503.
       connection-init-sql: "SET lock_timeout = '3s'"
-
-  threads:
-    virtual:
-      # The request path is I/O-bound (blocked on the database), so virtual threads
-      # remove the platform-thread-per-request cost. Note the JDK 21 caveat:
-      # synchronized blocks still pin a carrier thread until JEP 491 in JDK 24.
-      # This application uses none, but HikariCP historically does - which is the
-      # reason the pool is bounded conservatively above rather than relying on
-      # unbounded virtual-thread concurrency.
-      enabled: true
 
   flyway:
     enabled: true
@@ -73,13 +62,6 @@ management:
           include: livenessState,db
         readiness:
           include: readinessState,db
-  health:
-    status:
-      # DEGRADED is a custom status; without registering it here Spring maps
-      # unknown statuses to 200 and the severity ordering is undefined.
-      order: DOWN,OUT_OF_SERVICE,DEGRADED,UP,UNKNOWN
-      http-mapping:
-        DEGRADED: 200
   metrics:
     tags:
       application: ${spring.application.name}
@@ -122,7 +104,6 @@ app:
     batch-size: 20
     # Ceiling for transient-failure backoff. No attempt limit - see OutboxRelayStore.
     backoff-cap-seconds: 300
-    backlog-warn-threshold: 100
     purge-published-after-days: 7
 
   reconciliation:
