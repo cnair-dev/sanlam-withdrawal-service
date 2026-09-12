@@ -30,7 +30,11 @@ public class RetentionJob {
     private final IdempotencyRepository idempotencyRepository;
     private final OutboxProperties outboxProperties;
 
-    @Scheduled(cron = "${app.retention.cron:0 0 3 * * *}")
+    // Zoned explicitly. A container runs UTC, so an unzoned "3am" is 5am in the market
+    // this serves - the middle of the morning ramp rather than the quiet window it was
+    // meant to be. Timestamps are TIMESTAMPTZ and unaffected; only the trigger moves.
+    @Scheduled(cron = "${app.retention.cron:0 0 3 * * *}",
+               zone = "${app.schedule.zone:Africa/Johannesburg}")
     @Transactional
     public void purge() {
         int outboxPurged = outboxOperations

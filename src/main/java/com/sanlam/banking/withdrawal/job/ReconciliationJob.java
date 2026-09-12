@@ -120,7 +120,8 @@ public class ReconciliationJob {
                 .param("to", to).update();
     }
 
-    @Scheduled(cron = "${app.reconciliation.full-sweep-cron:0 30 3 * * *}")
+    @Scheduled(cron = "${app.reconciliation.full-sweep-cron:0 30 3 * * *}",
+               zone = "${app.schedule.zone:Africa/Johannesburg}")
     @Transactional(readOnly = true)
     public void reconcileEverything() {
         List<String> unbalanced = jdbc.sql("""

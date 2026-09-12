@@ -15,6 +15,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -134,5 +135,28 @@ class AccountStateRulesIT extends AbstractPostgresIT {
         BigDecimal balance = jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
                 .param("id", accountId).query(BigDecimal.class).single();
         assertThat(balance).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    @DisplayName("The event quotes the ledger's own instant, not a second clock")
+    void eventTimeMatchesTheLedgerEntry() {
+        long accountId = seed("ACTIVE");
+
+        var response = withdrawalService.withdraw(withdraw(accountId));
+
+        Instant ledgerTime = jdbc.sql("""
+                SELECT DISTINCT created_at FROM ledger_entry
+                 WHERE account_id = :id AND correlation_id = 'corr-state'
+                """).param("id", accountId).query(Instant.class).single();
+
+        assertThat(response.processedAt())
+                .as("the response and the ledger are one movement and must carry one time")
+                .isEqualTo(ledgerTime);
+
+        String payload = jdbc.sql("SELECT payload::text FROM outbox_event WHERE aggregate_id = :id")
+                .param("id", accountId).query(String.class).single();
+        assertThat(payload)
+                .as("and so must the event that leaves the building")
+                .contains(ledgerTime.toString().replace("Z", ""));
     }
 }

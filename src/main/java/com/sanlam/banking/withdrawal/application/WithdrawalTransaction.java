@@ -75,10 +75,13 @@ public class WithdrawalTransaction {
 
         BigDecimal newBalance = resulting.get();
         UUID transactionId = UUID.randomUUID();
-        Instant now = Instant.now();
 
-        // 3. Double-entry: debit the customer, credit the settlement account.
-        ledgerRepository.recordWithdrawal(transactionId, command.accountId(),
+        // 3. Double-entry: debit the customer, credit the settlement account. The ledger's
+        //    own created_at is the movement's time - the event and the response quote it
+        //    rather than calling Instant.now() on a second clock. One withdrawal timed by
+        //    two independent clocks can have the event claiming an instant before the
+        //    ledger entry it describes, which is the kind of thing an auditor finds.
+        Instant now = ledgerRepository.recordWithdrawal(transactionId, command.accountId(),
                 properties.settlementAccountId(), command.amount(), currency,
                 command.correlationId());
 

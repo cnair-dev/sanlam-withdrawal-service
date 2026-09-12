@@ -19,6 +19,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,11 +66,17 @@ class WithdrawalServiceTest {
     void successfulWithdrawal() {
         when(accounts.debitIfPermitted(1001L, new BigDecimal("100.00"), "ZAR"))
                 .thenReturn(Optional.of(new BigDecimal("900.00")));
+        Instant ledgerTime = Instant.parse("2020-01-02T03:04:05Z");
+        when(ledger.recordWithdrawal(any(), anyLong(), anyLong(), any(), any(), any()))
+                .thenReturn(ledgerTime);
 
         WithdrawalResponse response = service.withdraw(command("100.00"));
 
         assertThat(response.resultingBalance()).isEqualByComparingTo("900.00");
         assertThat(response.status()).isEqualTo("SUCCESSFUL");
+        // A wall-clock Instant.now() would be today; the ledger's is 2020. The response has
+        // to quote the ledger, or the audit trail has two times for one movement.
+        assertThat(response.processedAt()).isEqualTo(ledgerTime);
         verify(ledger).recordWithdrawal(any(), eq(1001L), eq(9000L),
                 eq(new BigDecimal("100.00")), eq("ZAR"), eq("corr-1"));
         verify(outbox).append(eq(1001L), anyString(), anyString(), anyInt(), eq("corr-1"));

@@ -112,6 +112,11 @@ app:
   retention:
     cron: "0 0 3 * * *"
 
+  # Cron expressions above are wall-clock in this zone. Storage is TIMESTAMPTZ and
+  # unaffected - this only decides when the nightly jobs fire.
+  schedule:
+    zone: ${SCHEDULE_ZONE:Africa/Johannesburg}
+
 logging:
   level:
     com.sanlam.banking.withdrawal: INFO
