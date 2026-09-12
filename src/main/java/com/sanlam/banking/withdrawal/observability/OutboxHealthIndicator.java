@@ -1,7 +1,7 @@
 package com.sanlam.banking.withdrawal.observability;
 
 import com.sanlam.banking.withdrawal.config.OutboxProperties;
-import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
+import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
@@ -20,14 +20,14 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class OutboxHealthIndicator implements HealthIndicator {
 
-    private final OutboxRepository outboxRepository;
+    private final OutboxOperations outboxOperations;
     private final OutboxProperties properties;
 
     @Override
     public Health health() {
-        long pending = outboxRepository.countPending();
-        long failed  = outboxRepository.countFailed();
-        long oldest  = outboxRepository.oldestPendingAgeSeconds();
+        long pending = outboxOperations.countPending();
+        long failed  = outboxOperations.countFailed();
+        long oldest  = outboxOperations.oldestPendingAgeSeconds();
 
         Health.Builder builder = (failed > 0 || pending > properties.backlogWarnThreshold())
                 ? Health.status("DEGRADED")

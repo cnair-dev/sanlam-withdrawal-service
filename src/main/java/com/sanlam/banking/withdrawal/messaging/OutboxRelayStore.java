@@ -2,11 +2,11 @@ package com.sanlam.banking.withdrawal.messaging;
 
 import java.util.List;
 
-public interface OutboxRepository {
-
-    /** Written in the SAME transaction as the balance and ledger changes. */
-    void append(long aggregateId, String eventType, String payload, int eventVersion,
-                String correlationId);
+/**
+ * The delivery side: taking events from the outbox and recording what happened
+ * to them. Used only by the relay.
+ */
+public interface OutboxRelayStore {
 
     /**
      * Claim a batch of due events for this worker.
@@ -47,25 +47,4 @@ public interface OutboxRepository {
      * claim set delays everything behind it.
      */
     void markPermanentFailure(long id, String error);
-
-    /**
-     * Move dead-lettered events back into the claim set, once whatever made them
-     * unpublishable has been fixed. Returns the number requeued.
-     *
-     * <p>Without this, recovery from a dead letter is an operator running UPDATE
-     * against a financial system by hand, which is not a recovery procedure.
-     */
-    int requeueFailed();
-
-    /** As above, for a single event. Returns true if it was in FAILED. */
-    boolean requeueFailed(long id);
-
-    long countPending();
-
-    /** Oldest pending event age in seconds - the meaningful lag SLO, better than depth. */
-    long oldestPendingAgeSeconds();
-
-    long countFailed();
-
-    int purgePublishedOlderThanDays(int days);
 }

@@ -22,7 +22,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 class OutboxRelayIT extends AbstractPostgresIT {
 
     @Autowired OutboxRelay relay;
-    @Autowired OutboxRepository outboxRepository;
+    @Autowired OutboxAppender outboxAppender;
+    @Autowired OutboxRelayStore outboxRelayStore;
+    @Autowired OutboxOperations outboxOperations;
     @Autowired RecordingEventPublisher publisher;
     @Autowired JdbcClient jdbc;
     @Autowired PlatformTransactionManager txManager;
@@ -37,19 +39,19 @@ class OutboxRelayIT extends AbstractPostgresIT {
     @Test
     @DisplayName("Relay drains pending events and marks them published")
     void drainsPendingEvents() {
-        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
-        outboxRepository.append(1002L, "withdrawal.completed", "{\"a\":2}", 1, "corr-test");
+        outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
+        outboxAppender.append(1002L, "withdrawal.completed", "{\"a\":2}", 1, "corr-test");
 
         relay.drain();
 
         assertThat(publisher.published).hasSize(2);
-        assertThat(outboxRepository.countPending()).isZero();
+        assertThat(outboxOperations.countPending()).isZero();
     }
 
     @Test
     @DisplayName("A transient failure backs off and stays PENDING, however often it repeats")
     void transientFailureNeverDeadLetters() {
-        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
+        outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
         publisher.failWith(EventPublishException.Kind.TRANSIENT);
 
         relay.drain();
@@ -76,9 +78,9 @@ class OutboxRelayIT extends AbstractPostgresIT {
             relay.drain();
         }
 
-        assertThat(outboxRepository.countFailed()).isZero();
-        assertThat(outboxRepository.countPending()).isEqualTo(1L);
-        assertThat(outboxRepository.oldestPendingAgeSeconds())
+        assertThat(outboxOperations.countFailed()).isZero();
+        assertThat(outboxOperations.countPending()).isEqualTo(1L);
+        assertThat(outboxOperations.oldestPendingAgeSeconds())
                 .as("the lag gauge must keep reporting during a total outage")
                 .isGreaterThanOrEqualTo(0L);
     }
@@ -86,13 +88,13 @@ class OutboxRelayIT extends AbstractPostgresIT {
     @Test
     @DisplayName("A message the transport rejects is dead-lettered on the first attempt")
     void permanentFailureDeadLettersImmediately() {
-        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
+        outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
         publisher.failWith(EventPublishException.Kind.PERMANENT);
 
         relay.drain();
 
-        assertThat(outboxRepository.countFailed()).isEqualTo(1L);
-        assertThat(outboxRepository.countPending()).isZero();
+        assertThat(outboxOperations.countFailed()).isEqualTo(1L);
+        assertThat(outboxOperations.countPending()).isZero();
 
         // And it stays out of the claim set rather than delaying the batch behind it.
         publisher.published.clear();
@@ -103,25 +105,25 @@ class OutboxRelayIT extends AbstractPostgresIT {
     @Test
     @DisplayName("A dead-lettered event can be requeued once the cause is fixed")
     void requeueReturnsDeadLettersToTheClaimSet() {
-        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
+        outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
         publisher.failWith(EventPublishException.Kind.PERMANENT);
         relay.drain();
-        assertThat(outboxRepository.countFailed()).isEqualTo(1L);
+        assertThat(outboxOperations.countFailed()).isEqualTo(1L);
 
         publisher.failWith(null);
-        int requeued = outboxRepository.requeueFailed();
+        int requeued = outboxOperations.requeueFailed();
         relay.drain();
 
         assertThat(requeued).isEqualTo(1);
-        assertThat(outboxRepository.countFailed()).isZero();
-        assertThat(outboxRepository.countPending()).isZero();
+        assertThat(outboxOperations.countFailed()).isZero();
+        assertThat(outboxOperations.countPending()).isZero();
         assertThat(publisher.published).hasSize(1);
     }
 
     @Test
     @DisplayName("Backed-off events are not re-claimed before next_attempt_at")
     void respectsBackoffWindow() {
-        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
+        outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
         publisher.setFailing(true);
         relay.drain();
 
@@ -145,7 +147,7 @@ class OutboxRelayIT extends AbstractPostgresIT {
     @DisplayName("A second relay worker claims a disjoint batch without waiting for the first")
     void concurrentWorkersClaimDisjointBatchesWithoutBlocking() throws Exception {
         for (int i = 0; i < 6; i++) {
-            outboxRepository.append(1000L + i, "withdrawal.completed", "{\"i\":" + i + "}", 1, "corr-test");
+            outboxAppender.append(1000L + i, "withdrawal.completed", "{\"i\":" + i + "}", 1, "corr-test");
         }
 
         // Disjointness on its own does not test SKIP LOCKED. Measured against
@@ -160,7 +162,7 @@ class OutboxRelayIT extends AbstractPostgresIT {
         var txTemplate = new TransactionTemplate(txManager);
 
         Runnable claim = () -> batches.add(
-                outboxRepository.claimBatch(3).stream().map(OutboxRecord::id).toList());
+                outboxRelayStore.claimBatch(3).stream().map(OutboxRecord::id).toList());
 
         Thread first = Thread.ofVirtual().start(() -> txTemplate.executeWithoutResult(tx -> {
             claim.run();

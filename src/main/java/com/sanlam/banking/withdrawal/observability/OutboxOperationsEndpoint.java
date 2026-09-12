@@ -1,6 +1,6 @@
 package com.sanlam.banking.withdrawal.observability;
 
-import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
+import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
@@ -35,21 +35,21 @@ import java.util.Map;
 @Slf4j
 public class OutboxOperationsEndpoint {
 
-    private final OutboxRepository outboxRepository;
+    private final OutboxOperations outboxOperations;
 
     @ReadOperation
     public Map<String, Object> status() {
         return Map.of(
-                "pending", outboxRepository.countPending(),
-                "failed", outboxRepository.countFailed(),
-                "oldestPendingAgeSeconds", outboxRepository.oldestPendingAgeSeconds());
+                "pending", outboxOperations.countPending(),
+                "failed", outboxOperations.countFailed(),
+                "oldestPendingAgeSeconds", outboxOperations.oldestPendingAgeSeconds());
     }
 
     /** Requeue every dead-lettered event, for recovery after a fixed defect. */
     @WriteOperation
     @Transactional
     public Map<String, Object> requeueAll() {
-        int requeued = outboxRepository.requeueFailed();
+        int requeued = outboxOperations.requeueFailed();
         log.warn("Operator requeued {} dead-lettered outbox event(s)", requeued);
         return Map.of("requeued", requeued);
     }
@@ -58,7 +58,7 @@ public class OutboxOperationsEndpoint {
     @WriteOperation
     @Transactional
     public Map<String, Object> requeueOne(@Selector long id) {
-        boolean requeued = outboxRepository.requeueFailed(id);
+        boolean requeued = outboxOperations.requeueFailed(id);
         log.warn("Operator requeue of outbox event {}: {}", id, requeued ? "requeued" : "not in FAILED");
         return Map.of("id", id, "requeued", requeued);
     }

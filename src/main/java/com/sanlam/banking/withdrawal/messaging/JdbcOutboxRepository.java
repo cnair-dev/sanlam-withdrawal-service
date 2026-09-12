@@ -8,7 +8,8 @@ import java.util.List;
 
 @Repository
 @RequiredArgsConstructor
-public class JdbcOutboxRepository implements OutboxRepository {
+public class JdbcOutboxRepository
+        implements OutboxAppender, OutboxRelayStore, OutboxOperations {
 
     private final JdbcClient jdbc;
 

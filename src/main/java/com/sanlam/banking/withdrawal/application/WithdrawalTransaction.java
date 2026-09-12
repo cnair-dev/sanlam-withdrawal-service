@@ -7,7 +7,7 @@ import com.sanlam.banking.withdrawal.config.WithdrawalProperties;
 import com.sanlam.banking.withdrawal.domain.AccountDiagnostic;
 import com.sanlam.banking.withdrawal.domain.WithdrawalCommand;
 import com.sanlam.banking.withdrawal.domain.exception.*;
-import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
+import com.sanlam.banking.withdrawal.messaging.OutboxAppender;
 import com.sanlam.banking.withdrawal.messaging.WithdrawalEvent;
 import com.sanlam.banking.withdrawal.persistence.AccountRepository;
 import com.sanlam.banking.withdrawal.persistence.IdempotencyRepository;
@@ -48,7 +48,7 @@ public class WithdrawalTransaction {
 
     private final AccountRepository accountRepository;
     private final LedgerRepository ledgerRepository;
-    private final OutboxRepository outboxRepository;
+    private final OutboxAppender outboxAppender;
     private final IdempotencyRepository idempotencyRepository;
     private final WithdrawalProperties properties;
     private final ObjectMapper objectMapper;
@@ -91,7 +91,7 @@ public class WithdrawalTransaction {
         // 4. Outbox row, same transaction as everything above.
         WithdrawalEvent event = WithdrawalEvent.completed(transactionId, command.accountId(),
                 command.amount(), newBalance, currency, command.correlationId(), now);
-        outboxRepository.append(command.accountId(), WithdrawalEvent.TYPE,
+        outboxAppender.append(command.accountId(), WithdrawalEvent.TYPE,
                 serialise(event), WithdrawalEvent.VERSION, command.correlationId());
 
         WithdrawalResponse response = new WithdrawalResponse(transactionId, command.accountId(),

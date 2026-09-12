@@ -7,7 +7,8 @@ import com.sanlam.banking.withdrawal.config.WithdrawalProperties;
 import com.sanlam.banking.withdrawal.domain.AccountDiagnostic;
 import com.sanlam.banking.withdrawal.domain.WithdrawalCommand;
 import com.sanlam.banking.withdrawal.domain.exception.*;
-import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
+import com.sanlam.banking.withdrawal.messaging.OutboxAppender;
+import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
 import com.sanlam.banking.withdrawal.observability.WithdrawalMetrics;
 import com.sanlam.banking.withdrawal.persistence.AccountRepository;
 import com.sanlam.banking.withdrawal.persistence.IdempotencyRepository;
@@ -37,7 +38,8 @@ class WithdrawalServiceTest {
 
     AccountRepository accounts = mock(AccountRepository.class);
     LedgerRepository ledger = mock(LedgerRepository.class);
-    OutboxRepository outbox = mock(OutboxRepository.class);
+    OutboxAppender outbox = mock(OutboxAppender.class);
+    OutboxOperations outboxOperations = mock(OutboxOperations.class);
     IdempotencyRepository idempotency = mock(IdempotencyRepository.class);
 
     WithdrawalProperties properties = new WithdrawalProperties(9000L, "ZAR", 24);
@@ -47,7 +49,7 @@ class WithdrawalServiceTest {
 
     @BeforeEach
     void setUp() {
-        WithdrawalMetrics metrics = new WithdrawalMetrics(new SimpleMeterRegistry(), outbox);
+        WithdrawalMetrics metrics = new WithdrawalMetrics(new SimpleMeterRegistry(), outboxOperations);
         WithdrawalTransaction transaction = new WithdrawalTransaction(
                 accounts, ledger, outbox, idempotency, properties, objectMapper);
         service = new WithdrawalService(transaction, idempotency, properties, metrics, objectMapper);
