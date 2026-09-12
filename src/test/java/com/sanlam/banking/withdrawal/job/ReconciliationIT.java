@@ -10,6 +10,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.util.UUID;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -115,5 +116,43 @@ class ReconciliationIT extends AbstractPostgresIT {
 
         // Leave the fixture consistent for anything that runs after this.
         jdbc.sql("UPDATE accounts SET balance = 700.00 WHERE id = :id").param("id", accountId).update();
+    }
+
+    @Test
+    @DisplayName("Two instances reconciling at once count a breach once, not twice")
+    void watermarkRowIsTheLease() throws Exception {
+        long accountId = seedFundedAccount("100.00");
+        reconciliation.reconcileIncrementally();
+
+        jdbc.sql("""
+                INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
+                VALUES (:txn, :id, 'CREDIT', 25.00, 'ZAR', 'recon-test-lease')
+                """).param("txn", UUID.randomUUID()).param("id", accountId).update();
+
+        // Every instance runs this schedule. The barrier forces the overlap that would
+        // otherwise be a matter of timing: both threads enter with the same watermark
+        // visible, and only the row lock stops both of them reporting the same breach.
+        double before = breachesDetected();
+        CyclicBarrier startTogether = new CyclicBarrier(2);
+        Runnable pass = () -> {
+            try {
+                startTogether.await();
+                reconciliation.reconcileIncrementally();
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        Thread a = Thread.ofVirtual().start(pass);
+        Thread b = Thread.ofVirtual().start(pass);
+        a.join();
+        b.join();
+
+        // One orphaned credit is two breaches: the transaction does not balance, and the
+        // account's cached balance no longer matches its net ledger movement. The point of
+        // the assertion is that it is two and not four - the second pass blocks on the
+        // watermark row, then finds an empty window and reports nothing.
+        assertThat(breachesDetected() - before)
+                .as("both instances ran, one did the work")
+                .isEqualTo(2.0);
     }
 }

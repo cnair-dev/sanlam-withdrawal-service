@@ -74,7 +74,12 @@ public class ReconciliationJob {
                initialDelayString = "${app.reconciliation.initial-delay-ms:15000}")
     @Transactional
     public void reconcileIncrementally() {
-        long from = jdbc.sql("SELECT last_ledger_id FROM reconciliation_watermark")
+        // FOR UPDATE makes the watermark row the lease. Every instance runs this schedule,
+        // so without it two of them read the same watermark, check the same range and
+        // double-count the breach counter, and the row can be written backwards by whoever
+        // commits last. Holding it means a second instance blocks here, then reads the
+        // advanced watermark and returns at the guard below.
+        long from = jdbc.sql("SELECT last_ledger_id FROM reconciliation_watermark FOR UPDATE")
                 .query(Long.class).single();
         long to = jdbc.sql("SELECT COALESCE(MAX(id), 0) FROM ledger_entry")
                 .query(Long.class).single();
