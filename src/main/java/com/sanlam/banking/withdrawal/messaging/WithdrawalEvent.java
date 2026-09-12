@@ -7,23 +7,23 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * Withdrawal event envelope, shaped after the CNCF CloudEvents 1.0 core
- * attributes (specversion / id / source / type / subject / time) rather than an
- * ad-hoc structure, so downstream consumers and routing infrastructure can
- * interpret it without bespoke knowledge of this service.
+ * Withdrawal event envelope, using the CloudEvents 1.0 core attributes (specversion / id /
+ * source / type / subject / time) rather than an ad-hoc shape, so routing infrastructure
+ * can read it without bespoke knowledge of this service. {@code eventversion} is an
+ * extension attribute - lowercase because the spec restricts extension names to lowercase
+ * alphanumerics, so the spelling is not cosmetic.
  *
- * Consumers this exists for: AML / FICA cash-threshold monitoring, fraud
- * scoring, customer notification, and statement generation. That is the reason
- * a withdrawal publishes an event at all.
+ * <p>The consumers this exists for: AML / FICA cash-threshold monitoring, fraud scoring,
+ * customer notification, statement generation.
  *
- * Data governance: the payload deliberately carries only a surrogate account
- * id and the amount. No customer name, national identity number or full
- * account number crosses the service boundary (POPIA data minimisation).
+ * <p>Data governance: no customer name, national identity number or full account number
+ * crosses the boundary - a surrogate account id, the amount and the resulting balance are
+ * what the notification and statement consumers actually need (POPIA minimisation is about
+ * necessity, not about carrying as little as possible).
  *
- * Versioning is additive-only: new fields may be added, existing fields never
- * change meaning or disappear. eventVersion lets a consumer branch if it must.
- * A schema registry would be the right answer at higher event-type and team
- * count; it is not warranted for one event type and one producer.
+ * <p>Versioning is additive-only: fields may be added, existing ones never change meaning
+ * or disappear. A schema registry is the right answer at higher event-type and team count,
+ * not for one event type and one producer.
  */
 public record WithdrawalEvent(
         @JsonProperty("specversion") String specVersion,
@@ -32,7 +32,7 @@ public record WithdrawalEvent(
         String type,
         String subject,
         Instant time,
-        @JsonProperty("eventVersion") int eventVersion,
+        @JsonProperty("eventversion") int eventVersion,
         WithdrawalEventData data
 ) {
     public static final String SPEC_VERSION = "1.0";

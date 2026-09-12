@@ -15,45 +15,31 @@ import java.util.List;
 /**
  * Polling relay for the transactional outbox.
  *
- * Why an outbox at all: the original code committed the balance change and then
- * published to SNS as a second, independent write. If the process dies between
- * them the money moved and no event exists; if the publish succeeds and the
- * transaction later rolls back, an event exists for money that never moved.
- * Writing the event as a row in the SAME transaction removes that window by
- * construction, and this relay turns the row into a real message afterwards.
- * Delivery is therefore at-least-once with a small delay, and consumers must be
- * idempotent - which they must be under any realistic messaging system anyway.
+ * <p>Why an outbox: the original code committed the balance change and then published to
+ * SNS as a second, independent write. Die between the two and the money moved with no
+ * event; publish and then roll back and an event exists for money that never moved.
+ * Writing the event as a row in the SAME transaction removes that window by construction.
+ * Delivery becomes at-least-once with a small delay, so consumers must be idempotent -
+ * which they must be under any realistic broker anyway.
  *
- * On holding the row lock across the SNS call: the general rule is never to hold
- * a CONTENDED lock across network I/O. Outbox rows are contended only by other
- * relay workers, which SKIP LOCKED past them, so the blast radius is a held
- * connection and a longer transaction. That is bounded at batch-size multiplied
- * by the SNS client's apiCallTimeout - currently 20 x 10s - and both halves of
- * that bound are set explicitly in configuration, because the SDK does not
- * impose an API call timeout of its own. On the withdrawal path, where rows are
- * contended by live customers, no network call happens inside the transaction.
+ * <p>The SNS call happens inside the claiming transaction, bending the rule never to hold
+ * a CONTENDED lock across network I/O. These rows are contended only by other relay
+ * workers, which SKIP LOCKED past them, so the cost is a held connection and a long
+ * transaction, bounded at batch-size x the SNS apiCallTimeout (20 x 10s, both set
+ * explicitly). Nothing network-bound runs inside the withdrawal transaction, where rows
+ * are contended by live customers.
  *
- * Note this is one transaction for the whole batch, so the window between SNS
- * accepting a publish and the row being marked published spans the rest of the
- * batch, not one row. It cannot be closed without a distributed transaction
- * between PostgreSQL and SNS, which is the dual-write problem again one step
- * further downstream. At-least-once plus consumer idempotency is the answer,
- * and the event id is the transaction id minted inside the withdrawal, so it is
- * stable across every republish.
+ * <p>One transaction covers the whole batch, so the window between SNS accepting a publish
+ * and the row being marked published spans the rest of the batch rather than one row.
+ * Closing it needs a distributed transaction between PostgreSQL and SNS - the dual-write
+ * problem again, one step downstream. The event id is the transaction id minted inside the
+ * withdrawal, so it is stable across republishes.
  *
- * Failures are handled by what they are rather than by how often they have
- * happened. A message the transport rejects on its own merits is dead-lettered
- * immediately - retrying it ten times only delays everything behind it. A
- * transport failure backs the event off and leaves it PENDING with no attempt
- * limit, because an event that cannot currently be delivered is an operational
- * problem to raise, not one to discard. An earlier version counted attempts
- * instead, which meant an SNS outage lasting longer than about eight and a half
- * minutes quietly dead-lettered every pending event.
- *
- * A circuit breaker was considered and deliberately left out. Backoff already
- * suppresses doomed calls during an outage, and the classification above is a
- * better answer to poison messages than a breaker, which does nothing for them.
- * See docs/decisions/0001.
+ * <p>Failures are handled by what they are rather than by how often they have happened; an
+ * earlier version counted attempts, so an SNS outage over about eight and a half minutes
+ * quietly dead-lettered everything pending. A circuit breaker was considered and left out -
+ * backoff already suppresses doomed calls, and classification is the better answer to
+ * poison messages. See docs/decisions/0001.
  */
 @Component
 @Slf4j
@@ -75,11 +61,9 @@ public class OutboxRelay {
         log.debug("Outbox relay claimed {} event(s)", batch.size());
 
         for (OutboxRecord record : batch) {
-            // The relay runs on the scheduler thread and inherits nothing from
-            // the request that produced the event, so without this every
-            // publish-side log line - including the ones read during an incident
-            // - is unattributable. Restored per record because one batch spans
-            // many unrelated requests.
+            // The scheduler thread inherits nothing from the request that produced the
+            // event, so without this every publish-side log line is unattributable.
+            // Restored per record because one batch spans many unrelated requests.
             if (record.correlationId() != null) {
                 MDC.put(CorrelationIdFilter.MDC_KEY, record.correlationId());
             }
@@ -89,15 +73,12 @@ public class OutboxRelay {
                 outboxRelayStore.markPublished(record.id());
                 metrics.recordPublish(true);
             } catch (EventPublishException e) {
-                // Caught per record: one bad message must not stall the batch.
-                // Both branches are ordinary UPDATEs, so the surrounding
-                // transaction stays usable.
+                // Per record: one bad message must not stall the batch. Both branches of
+                // handleFailure are ordinary UPDATEs, so the transaction stays usable.
                 handleFailure(record, e);
             } catch (RuntimeException e) {
-                // An unclassified failure - a bug in the publisher, a
-                // serialisation fault - is treated as transient. Holding the
-                // event and raising the backlog is recoverable; discarding it
-                // is not.
+                // Unclassified - a publisher bug, a serialisation fault. Treated as
+                // transient: holding the event is recoverable, discarding it is not.
                 handleFailure(record, new EventPublishException(
                         EventPublishException.Kind.TRANSIENT, e.getMessage(), e));
             } finally {

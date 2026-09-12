@@ -2,49 +2,37 @@ package com.sanlam.banking.withdrawal.messaging;
 
 import java.util.List;
 
-/**
- * The delivery side: taking events from the outbox and recording what happened
- * to them. Used only by the relay.
- */
+/** The delivery side of the outbox. Used only by the relay. */
 public interface OutboxRelayStore {
 
     /**
-     * Claim a batch of due events for this worker.
+     * Claims a batch of due events. Correctness comes from holding a row lock while
+     * markPublished runs in the same transaction - plain FOR UPDATE is already safe,
+     * because a blocked worker re-evaluates its WHERE against rows that are no longer
+     * PENDING. SKIP LOCKED buys liveness: measured on PostgreSQL 16, a second worker
+     * waits 0.14s rather than 2.47s. Dropping the locking clause is what duplicates.
      *
-     * <p>Uses FOR UPDATE SKIP LOCKED. Correctness comes from holding a row lock
-     * while markPublished runs in the same transaction - plain FOR UPDATE is
-     * already safe, because a blocked worker re-evaluates its WHERE against rows
-     * that are no longer PENDING. What SKIP LOCKED adds is that a second worker
-     * does not wait: measured against PostgreSQL 16, 0.14s rather than 2.47s
-     * behind a worker holding a batch. Dropping the locking clause altogether is
-     * what produces duplicate publishes.
-     *
-     * <p>The trade-off is strict global ordering, given up for parallel drain.
-     * Per-account ordering would require partitioning the claim by aggregate_id.
+     * <p>Costs strict global ordering. Per-account ordering would need the claim
+     * partitioned by aggregate_id.
      */
     List<OutboxRecord> claimBatch(int batchSize);
 
     void markPublished(long id);
 
     /**
-     * The transport could not take the message but the message is fine. Counts
-     * the attempt, moves next_attempt_at out by an exponential interval capped
-     * at backoffCapSeconds, and leaves the row PENDING.
+     * Transport could not take the message but the message is fine: count the attempt,
+     * push next_attempt_at out by a capped exponential interval, leave the row PENDING.
      *
-     * <p>Deliberately has no terminal state. An event that cannot be delivered
-     * is an operational problem to be alerted on, not one to be discarded: for
-     * an AML-relevant or customer-facing event, a visible backlog is strictly
-     * better than silent loss. Holding the rows PENDING is also what keeps
-     * outbox.pending.oldest.age.seconds meaningful - a terminal state would let
-     * the lag gauge fall back to zero at the moment delivery had failed
-     * completely.
+     * <p>No terminal state here, deliberately. An undeliverable AML-relevant event is
+     * something to alert on, not to discard, and holding the rows PENDING is what keeps
+     * outbox.pending.oldest.age.seconds honest - a terminal state would drop the lag
+     * gauge to zero at the moment delivery had failed completely.
      */
     void markTransientFailure(long id, String error, int backoffCapSeconds);
 
     /**
-     * The message itself was rejected and will never publish. Terminal, on the
-     * first occurrence: there is nothing to wait for, and leaving it in the
-     * claim set delays everything behind it.
+     * The message was rejected and will never publish. Terminal on first occurrence:
+     * there is nothing to wait for, and it delays everything behind it.
      */
     void markPermanentFailure(long id, String error);
 }

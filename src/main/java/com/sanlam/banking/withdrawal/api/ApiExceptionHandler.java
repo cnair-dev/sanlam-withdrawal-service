@@ -23,22 +23,17 @@ import java.time.Instant;
 import java.util.stream.Collectors;
 
 /**
- * Replaces the original's stringly-typed replies ("Withdrawal successful",
- * "Insufficient funds for withdrawal"), all of which were returned as HTTP 200
- * and gave clients nothing to branch on.
+ * Replaces the original's stringly-typed replies ("Withdrawal successful", "Insufficient
+ * funds for withdrawal"), all returned as HTTP 200, with RFC 7807 ProblemDetail.
  *
- * <p>Responses use RFC 7807 ProblemDetail rather than a bespoke error shape.
- *
- * <p>Extending ResponseEntityExceptionHandler is load-bearing, not decoration.
- * ExceptionHandlerExceptionResolver runs before DefaultHandlerExceptionResolver,
- * so an advice carrying a catch-all @ExceptionHandler(Exception.class) and
- * nothing else intercepts every Spring MVC exception before the framework can
- * map it - malformed JSON, an unsupported media type, a wrong method and an
- * unknown path all become 500. On an endpoint that moves money that is worse
- * than untidy: 500 is the signal that tells a well-behaved client the outcome
- * was ambiguous and the request should be retried, so a permanently malformed
- * request becomes a retry loop. The base class supplies the correct 4xx
- * mappings; the catch-all below now only sees what nothing else claimed.
+ * <p>Extending ResponseEntityExceptionHandler is load-bearing.
+ * ExceptionHandlerExceptionResolver runs before DefaultHandlerExceptionResolver, so an
+ * advice carrying only a catch-all @ExceptionHandler(Exception.class) intercepts every
+ * Spring MVC exception before the framework can map it - malformed JSON, wrong media type,
+ * wrong method and unknown path all become 500. On an endpoint that moves money that is
+ * worse than untidy: 500 tells a well-behaved client the outcome was ambiguous and should
+ * be retried, so a permanently malformed request becomes a retry loop. The base class
+ * supplies the 4xx mappings; the catch-all below sees only what nothing else claimed.
  */
 @RestControllerAdvice
 @Slf4j
@@ -47,10 +42,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     private static final String BASE = "https://sanlam.co.za/problems/";
 
     /**
-     * The mapping is a pattern-matching switch over a sealed hierarchy with no
-     * default branch. Adding a WithdrawalException subtype stops this compiling
-     * until someone chooses its status code, rather than letting it fall through
-     * to a 500.
+     * A pattern-matching switch over a sealed hierarchy with no default branch: adding a
+     * WithdrawalException subtype stops this compiling until someone chooses its status
+     * code, rather than falling through to a 500.
      */
     @ExceptionHandler(WithdrawalException.class)
     public ProblemDetail handleWithdrawal(WithdrawalException ex) {
@@ -58,12 +52,10 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             case AccountNotFoundException e -> build(HttpStatus.NOT_FOUND,
                     "Account not found", e.getMessage(), "account-not-found");
 
-            // One status code, distinct problem types. All three are a conflict
-            // between the request and the account's state, but the caller's next
-            // step differs: a dormant account needs reactivating, a frozen one
-            // needs the hold lifted, a closed one is terminal. RFC 7807 type
-            // URIs are the machine-readable place for that difference, so a
-            // client can branch on it without parsing prose.
+            // One status code, distinct problem types. All three are a conflict with the
+            // account's state, but the caller's next step differs: dormant needs
+            // reactivating, frozen needs the hold lifted, closed is terminal. The type URI
+            // is where a client reads that difference without parsing prose.
             case AccountNotActiveException e -> build(HttpStatus.CONFLICT,
                     "Account not active", e.getMessage(), switch (e.getStatus()) {
                         case "FROZEN"  -> "account-frozen";
@@ -83,9 +75,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Raised by @Validated on the controller for constraints on method
-     * parameters - a present but blank Idempotency-Key, for example. A missing
-     * header is a different exception and is handled by the base class.
+     * @Validated on the controller, for a present but blank Idempotency-Key. A missing
+     * header is a different exception, handled by the base class.
      */
     @ExceptionHandler(ConstraintViolationException.class)
     public ProblemDetail handleConstraintViolation(ConstraintViolationException ex) {
@@ -96,10 +87,9 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * The lock_timeout set on every pooled connection surfaces here once
-     * @Retryable has exhausted its attempts. The row is contended rather than
-     * broken, so the caller is told to come back rather than that the request
-     * failed.
+     * The lock_timeout set on every pooled connection surfaces here once @Retryable has
+     * exhausted its attempts. The row is contended, not broken, so the caller is told to
+     * come back rather than that the request failed.
      */
     @ExceptionHandler(CannotAcquireLockException.class)
     public ResponseEntity<ProblemDetail> handleLockTimeout(CannotAcquireLockException ex) {
@@ -113,9 +103,8 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     /**
-     * Last resort. The message is deliberately generic: internal failure detail
-     * belongs in the logs, correlated by id, not in a response body that may
-     * cross a trust boundary.
+     * Last resort. Generic on purpose: failure detail belongs in the logs, correlated by
+     * id, not in a response body that may cross a trust boundary.
      */
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception ex) {
@@ -135,10 +124,7 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
                 .body(build(HttpStatus.BAD_REQUEST, "Invalid request", detail, "validation-failed"));
     }
 
-    /**
-     * Decorates the base class's own ProblemDetail bodies so framework-mapped
-     * errors carry the same correlation id and timestamp as the ones built here.
-     */
+    /** Gives framework-mapped errors the same correlation id and timestamp as ours. */
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(
             Exception ex, @Nullable Object body, HttpHeaders headers,

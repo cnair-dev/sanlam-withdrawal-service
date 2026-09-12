@@ -10,20 +10,16 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Retention.
+ * Retention. Both of these tables grow without bound otherwise - a cost problem and a
+ * data-governance one: under POPIA, personal and transactional data is kept only as long
+ * as it serves the purpose it was collected for.
  *
- * Both of these tables grow without bound otherwise, which is a cost problem and
- * a data-governance problem: under POPIA, personal and transactional data should
- * be kept only as long as it serves the purpose it was collected for.
+ * <p>Published outbox rows are purged after a short forensics window; idempotency keys
+ * expire on their own TTL. The ledger is explicitly NOT purged - financial records carry a
+ * statutory retention obligation (FICA: seven years) and are archived, not deleted.
  *
- * Published outbox rows have done their job once delivered and are purged after
- * a short window kept only for operational forensics. Idempotency keys expire on
- * their own TTL. The ledger is explicitly NOT purged here - financial records
- * carry a statutory retention obligation (FICA: seven years) and are archived
- * rather than deleted.
- *
- * At higher volume the right mechanism is monthly partitions and DROP PARTITION
- * instead of DELETE, which avoids the vacuum load entirely.
+ * <p>At higher volume the right mechanism is monthly partitions and DROP PARTITION rather
+ * than DELETE, which avoids the vacuum load entirely.
  */
 @Component
 @Slf4j

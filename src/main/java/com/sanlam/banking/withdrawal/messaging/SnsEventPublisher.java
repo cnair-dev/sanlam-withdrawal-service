@@ -23,14 +23,12 @@ public class SnsEventPublisher implements EventPublisher {
     private final AwsProperties awsProperties;
 
     /**
-     * A standard (not FIFO) SNS topic is used deliberately: this is a fan-out
-     * notification to independent consumers that each tolerate duplicates, so
-     * the higher throughput and lower cost of standard delivery is worth more
-     * than FIFO's ordering and deduplication guarantees.
+     * A standard rather than FIFO topic: this is fan-out to independent consumers that each
+     * tolerate duplicates, so the throughput and cost of standard delivery beat FIFO's
+     * ordering and deduplication.
      *
-     * eventType is set as a message ATTRIBUTE as well as being in the body so
-     * subscribers can apply SNS filter policies and avoid paying to receive and
-     * parse messages they do not want.
+     * <p>eventType is a message ATTRIBUTE as well as body content so subscribers can apply
+     * filter policies instead of paying to receive and parse messages they do not want.
      */
     @Override
     public void publish(String eventType, String payload, String subject) {
@@ -47,16 +45,15 @@ public class SnsEventPublisher implements EventPublisher {
             PublishResponse response = snsClient.publish(request);
             log.debug("Published event to SNS: type={} messageId={}", eventType, response.messageId());
         } catch (InvalidParameterException | InvalidParameterValueException | ValidationException e) {
-            // The message itself was rejected - malformed, oversized, or an
-            // attribute SNS will not accept. No number of retries changes that.
+            // Rejected on its own merits - malformed, oversized, a bad attribute. No
+            // number of retries changes that.
             throw new EventPublishException(EventPublishException.Kind.PERMANENT,
                     "SNS rejected the message: " + e.getMessage(), e);
         } catch (RuntimeException e) {
-            // Everything else is treated as transient, including the config
-            // failures - NotFoundException for a wrong topic ARN,
-            // AuthorizationErrorException for bad credentials. Those will not
-            // fix themselves, but they fail every event rather than one, so the
-            // correct response is to hold the backlog and alert, not to discard.
+            // Everything else transient, including config failures - NotFoundException for
+            // a wrong topic ARN, AuthorizationErrorException for bad credentials. Those
+            // will not self-heal, but they fail every event rather than one, so hold the
+            // backlog and alert rather than discard.
             throw new EventPublishException(EventPublishException.Kind.TRANSIENT,
                     e.getMessage(), e);
         }

@@ -15,19 +15,14 @@ import java.util.Map;
 /**
  * Operator control for the dead-letter queue.
  *
- * <p>Dead-lettering is only half a design. Without a way back, recovering an
- * event that was rejected for a reason since fixed means someone running UPDATE
- * by hand against a financial system, usually at the worst possible hour - and
- * an ad-hoc UPDATE against the outbox is exactly the class of operation that
- * should not be routine.
+ * <p>Dead-lettering is only half a design. Without a way back, recovering an event
+ * rejected for a reason since fixed means someone hand-writing UPDATE against a financial
+ * system at the worst possible hour.
  *
- * <p>This lives on the actuator surface rather than the public API on purpose.
- * Actuator is conventionally bound to a separate management port and secured at
- * the platform edge, which is where an operational control belongs; the
- * withdrawal API is for callers moving money, not for operators repairing
- * delivery. Security is out of scope for this exercise, so nothing here is
- * authenticated - in a real deployment this endpoint is management-port-only
- * and role-restricted, and that is a deployment concern rather than a code one.
+ * <p>On the actuator surface rather than the public API deliberately: actuator is bound to
+ * a separate management port and secured at the platform edge, which is where an
+ * operational control belongs. Security is out of scope here, so nothing is authenticated
+ * - in a real deployment this is management-port-only and role-restricted.
  */
 @Component
 @Endpoint(id = "outbox")

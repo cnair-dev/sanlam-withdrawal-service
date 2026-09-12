@@ -39,18 +39,15 @@ public class WithdrawalService {
     private final ObjectMapper objectMapper;
 
     /**
-     * Retries are scoped to genuinely transient infrastructure faults - a
-     * connection blip, or being chosen as a deadlock victim - each attempt
-     * running in a fresh transaction.
+     * Retries cover genuinely transient infrastructure faults - a connection blip, being
+     * chosen as a deadlock victim - each attempt in a fresh transaction.
      *
-     * Business outcomes are deliberately excluded. InsufficientFundsException is
-     * a correct answer, not a failure: retrying it would waste work and, worse,
-     * could succeed on a later attempt after an unrelated deposit landed, which
-     * is not what the caller asked for.
+     * <p>Business outcomes are excluded. InsufficientFundsException is a correct answer,
+     * not a failure: retrying it wastes work and could succeed on a later attempt after an
+     * unrelated deposit landed, which is not what the caller asked for.
      *
-     * This is a different concern from idempotency. Retry covers a request that
-     * never got a database answer; idempotency covers a client that never got an
-     * HTTP answer and sent the request again.
+     * <p>Separate concern from idempotency. Retry covers a request that never got a
+     * database answer; idempotency covers a client that never got an HTTP answer.
      */
     @Retryable(
             retryFor = { TransientDataAccessException.class, ConcurrencyFailureException.class },
@@ -66,18 +63,16 @@ public class WithdrawalService {
                 metrics.recordAttempt("success");
                 return response;
             } catch (IdempotentReplayException e) {
-                // The transaction rolled back, so nothing was half-applied. The
-                // winning request has committed, so its response is readable.
-                // Fall through - the replay happens below, not here.
+                // Rolled back, so nothing was half-applied, and the winner has committed so
+                // its response is readable. Replay happens below, not here.
             } catch (WithdrawalException e) {
                 metrics.recordAttempt(e.getClass().getSimpleName());
                 throw e;
             }
 
-            // Deliberately outside the catch above. A throw from inside a catch
-            // block is not caught by a sibling catch on the same try, so running
-            // the replay there let IdempotencyConflictException - the one outcome
-            // that signals a client integration bug - escape uncounted.
+            // Outside the catch above on purpose: a throw from inside a catch block is not
+            // caught by a sibling catch on the same try, so replaying there let
+            // IdempotencyConflictException escape uncounted.
             try {
                 WithdrawalResponse replayed = replay(command, requestHash);
                 metrics.recordAttempt("idempotent_replay");
@@ -98,9 +93,9 @@ public class WithdrawalService {
                 .orElseThrow(() -> new IllegalStateException(
                         "Idempotency key was claimed by another request but no response was stored"));
 
-        // Binding the key to the request that created it. Without this check a
-        // client that reuses a key with a different amount silently receives the
-        // previous response and the new withdrawal never happens.
+        // Binds the key to the request that created it. Without this, a client reusing a
+        // key with a different amount silently gets the previous response and the new
+        // withdrawal never happens.
         if (!requestHash.equals(stored.requestHash())) {
             throw new IdempotencyConflictException(command.idempotencyKey());
         }
@@ -113,11 +108,7 @@ public class WithdrawalService {
         }
     }
 
-    /**
-     * Fingerprint of the business parameters of the request. Only the fields
-     * that define the operation are included - not the correlation id, which
-     * legitimately differs between a client's original call and its retry.
-     */
+    /** Business parameters only - not the correlation id, which differs across a retry. */
     private String hash(WithdrawalCommand command) {
         String canonical = "%d|%s|%s".formatted(
                 command.accountId(),

@@ -5,19 +5,18 @@ import java.math.BigDecimal;
 import java.util.Optional;
 
 /**
- * Kept as an interface with a single implementation on purpose: it is the
- * seam the service is unit-tested against (Dependency Inversion), and the cost
- * is one file. It is NOT a speculative "port" for a second database.
+ * An interface with one implementation on purpose: it is the seam the service is
+ * unit-tested against, and the cost is one file. Not a speculative port for a second
+ * database.
  */
 public interface AccountRepository {
 
     /**
-     * Atomically debit an account, enforcing status and the available-balance
-     * invariant inside a single SQL statement.
+     * Atomically debit an account, enforcing status and the balance invariant inside one
+     * SQL statement.
      *
-     * @return the resulting balance, or empty if nothing was debited.
-     *         Empty means one of: no such account, account not ACTIVE, or
-     *         insufficient available funds - {@link #diagnose} distinguishes them.
+     * @return the resulting balance, or empty if nothing was debited - no such account,
+     *         not ACTIVE, or insufficient funds, which {@link #diagnose} distinguishes
      */
     Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount);
 

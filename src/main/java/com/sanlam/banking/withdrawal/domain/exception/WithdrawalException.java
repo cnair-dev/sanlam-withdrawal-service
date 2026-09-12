@@ -3,14 +3,11 @@ package com.sanlam.banking.withdrawal.domain.exception;
 /**
  * Sealed base for every business outcome that is not a successful withdrawal.
  *
- * Sealed (not just abstract) so that the exception -> HTTP status mapping in
- * ApiExceptionHandler can use a pattern-matching switch with NO default branch.
- * Adding a new subtype later becomes a compile error at every mapping site
- * rather than a silent fall-through to HTTP 500.
- *
- * Unchecked: these are outcomes the caller cannot meaningfully recover from
- * in-process, and forcing `throws` clauses through every layer adds noise
- * without adding safety.
+ * <p>Sealed rather than merely abstract so the exception -> HTTP mapping in
+ * ApiExceptionHandler can switch with no default branch: a new subtype becomes a compile
+ * error at every mapping site instead of a silent fall-through to 500. Unchecked because
+ * the caller cannot recover from these in-process, and threading `throws` through every
+ * layer adds noise without safety.
  */
 public abstract sealed class WithdrawalException extends RuntimeException
         permits AccountNotFoundException, AccountNotActiveException,

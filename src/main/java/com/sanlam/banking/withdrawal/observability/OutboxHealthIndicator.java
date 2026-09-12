@@ -8,13 +8,10 @@ import org.springframework.boot.actuate.health.HealthIndicator;
 import org.springframework.stereotype.Component;
 
 /**
- * Reports the outbox backlog.
- *
- * Deliberately NOT part of the liveness or readiness groups (see
- * application.yml): a backlog means the downstream broker is unhappy, not that
- * this instance is broken. Wiring it into liveness would make the orchestrator
- * restart every pod during exactly the incident this indicator exists to
- * surface, and restarting would make the backlog worse.
+ * Reports the outbox backlog. Deliberately NOT in the liveness or readiness groups (see
+ * application.yml): a backlog means the broker is unhappy, not that this instance is
+ * broken. In liveness it would make the orchestrator restart every pod during exactly the
+ * incident it exists to surface, which makes the backlog worse.
  */
 @Component("outbox")
 @RequiredArgsConstructor

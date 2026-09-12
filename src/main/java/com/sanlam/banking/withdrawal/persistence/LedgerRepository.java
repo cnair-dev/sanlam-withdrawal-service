@@ -6,10 +6,9 @@ import java.util.UUID;
 public interface LedgerRepository {
 
     /**
-     * Write both legs of one movement. Double-entry: the customer account is
-     * debited and the system settlement account is credited by the same amount,
-     * both tagged with the same transactionId so that any INDIVIDUAL movement
-     * can be proven to balance - not merely the ledger as a whole.
+     * Write both legs of one movement: the customer account debited, the system settlement
+     * account credited, both tagged with the same transactionId so that any INDIVIDUAL
+     * movement can be proven to balance - not merely the ledger as a whole.
      */
     void recordWithdrawal(UUID transactionId, long accountId, long settlementAccountId,
                           BigDecimal amount, String currency, String correlationId);

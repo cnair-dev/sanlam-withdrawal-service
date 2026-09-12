@@ -25,21 +25,17 @@ import java.util.UUID;
 /**
  * The transactional unit of work for a withdrawal.
  *
- * This lives in its own bean, separate from {@link WithdrawalService}, for a
- * specific reason: the retry policy must wrap the TRANSACTION, not run inside
- * it. Spring's transaction advice marks a transaction rollback-only on the
- * first exception, so retrying a statement within the same transaction can
- * never succeed - every subsequent attempt fails regardless of the original
- * cause. Because @Retryable sits on the caller and @Transactional sits here,
- * each retry attempt begins a genuinely new transaction.
+ * <p>Its own bean, separate from {@link WithdrawalService}, because the retry policy has to
+ * wrap the TRANSACTION rather than run inside it. Spring's transaction advice marks a
+ * transaction rollback-only on the first exception, so retrying a statement within the same
+ * transaction can never succeed. With @Retryable on the caller and @Transactional here,
+ * each attempt begins a genuinely new transaction. Calling this via `this.` from the
+ * service would bypass the proxy and silently run without a transaction at all; separate
+ * beans make that mistake impossible.
  *
- * Calling this method from inside WithdrawalService via `this.` would bypass
- * the proxy and silently run without a transaction; separate beans make that
- * mistake impossible.
- *
- * All four writes below - balance, ledger, outbox, idempotency - commit or roll
- * back together. That single property is what makes the dual-write problem, the
- * audit trail and idempotency safety all fall out of one mechanism.
+ * <p>All four writes below - balance, ledger, outbox, idempotency - commit or roll back
+ * together. That one property is what makes the dual-write problem, the audit trail and
+ * idempotency safety fall out of a single mechanism.
  */
 @Service
 @Slf4j
@@ -56,10 +52,9 @@ public class WithdrawalTransaction {
     @Transactional
     public WithdrawalResponse execute(WithdrawalCommand command, String requestHash) {
 
-        // 1. Claim the idempotency key BEFORE touching money, so a duplicate
-        //    fails fast. A concurrent request with the same key blocks on the
-        //    unique index until this transaction resolves; if this one commits
-        //    the other receives zero rows and replays the stored response.
+        // 1. Claim the key BEFORE touching money. A concurrent request with the same key
+        //    blocks on the unique index until this transaction resolves; if this one
+        //    commits, the other gets zero rows and replays the stored response.
         boolean claimed = idempotencyRepository.tryClaim(
                 command.clientId(), command.idempotencyKey(), requestHash,
                 command.accountId(), properties.idempotencyTtlHours());
@@ -72,9 +67,8 @@ public class WithdrawalTransaction {
                 accountRepository.debitIfPermitted(command.accountId(), command.amount());
 
         if (resulting.isEmpty()) {
-            // Zero rows has three possible causes; one query on the failure path
-            // distinguishes them. Throwing here rolls back the idempotency claim
-            // too, so a genuine retry later is not blocked by a failed attempt.
+            // Throwing rolls back the idempotency claim too, so a genuine retry later is
+            // not blocked by a failed attempt.
             throw explain(command);
         }
 
@@ -122,9 +116,8 @@ public class WithdrawalTransaction {
         try {
             return objectMapper.writeValueAsString(value);
         } catch (JsonProcessingException e) {
-            // Jackson replaces the original String.format JSON building, which
-            // produced invalid documents for any value containing a quote or
-            // backslash and silently mis-rendered BigDecimal as a quoted string.
+            // Jackson replaces the original String.format JSON building, which produced
+            // invalid documents for any value containing a quote or backslash.
             throw new IllegalStateException("Failed to serialise payload", e);
         }
     }

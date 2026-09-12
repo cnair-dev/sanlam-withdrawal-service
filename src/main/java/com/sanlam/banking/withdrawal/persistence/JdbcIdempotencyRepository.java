@@ -13,25 +13,19 @@ public class JdbcIdempotencyRepository implements IdempotencyRepository {
     private final JdbcClient jdbc;
 
     /**
-     * Claims the key, or reports that someone else already holds it.
+     * Claims the key, or reports that someone else already holds it. ON CONFLICT rather
+     * than catching a duplicate-key exception: in PostgreSQL any error aborts the
+     * surrounding transaction, leaving the caller holding one it cannot use for the replay
+     * read that follows.
      *
-     * The conflict target is the primary key, so exactly one concurrent caller
-     * inserts and the rest see zero rows. ON CONFLICT is used rather than
-     * catching a duplicate-key exception because in PostgreSQL any error aborts
-     * the surrounding transaction - the caller would be left holding a
-     * transaction it cannot use for the replay read that follows.
+     * <p>DO UPDATE ... WHERE expires_at < now() is what enforces the TTL. Expiry is a
+     * property of the row, so it has to be evaluated when the row is claimed. Leaving it to
+     * the nightly purge meant a key stayed effective for up to 24h past expiry and a
+     * legitimate reuse silently replayed the original response instead of withdrawing.
      *
-     * DO UPDATE ... WHERE expires_at < now() is what enforces the TTL. Expiry is
-     * a property of the row, so it has to be evaluated when the row is claimed;
-     * leaving it to the nightly purge meant a key stayed effective for up to
-     * 24h past its expiry and a legitimate reuse silently replayed the original
-     * response instead of performing the withdrawal. An expired row is taken
-     * over in the same statement and its stored response cleared.
-     *
-     * Note DO UPDATE takes a row lock where DO NOTHING does not, so a concurrent
-     * duplicate now blocks until the winner commits and then re-evaluates the
-     * WHERE against the committed row. That is the behaviour we want: the
-     * winner has just pushed expires_at forward, so the loser sees a live key.
+     * <p>DO UPDATE takes a row lock where DO NOTHING does not, so a concurrent duplicate
+     * blocks until the winner commits, then re-evaluates the WHERE against the committed
+     * row - the winner has just pushed expires_at forward, so the loser sees a live key.
      */
     @Override
     public boolean tryClaim(String clientId, String key, String requestHash, long accountId, int ttlHours) {

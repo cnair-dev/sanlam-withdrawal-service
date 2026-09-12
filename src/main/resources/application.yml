@@ -120,9 +120,7 @@ app:
   outbox:
     poll-interval-ms: 2000
     batch-size: 20
-    # Transient publish failures back off to this ceiling and stay PENDING.
-    # There is no attempt limit on purpose: an undeliverable event is an
-    # operational problem to alert on, not one to discard. See OutboxRepository.
+    # Ceiling for transient-failure backoff. No attempt limit - see OutboxRelayStore.
     backoff-cap-seconds: 300
     backlog-warn-threshold: 100
     purge-published-after-days: 7

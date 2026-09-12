@@ -16,41 +16,28 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * The control that makes the ledger worth having.
  *
- * <p>{@code accounts.balance} is a deliberate denormalisation: a cached position,
- * maintained for cheap reads and for the atomic conditional debit.
- * {@code ledger_entry} is the system of record. Two representations of the same
- * fact need a control proving they agree, otherwise the ledger is decoration - a
- * table nobody checks.
+ * <p>{@code accounts.balance} is a deliberate denormalisation - a cached position for
+ * cheap reads and the atomic conditional debit - while {@code ledger_entry} is the system
+ * of record. Two representations of one fact need a control proving they agree, or the
+ * ledger is decoration.
  *
- * <p>Two invariants are asserted:
  * <ol>
  *   <li>Every individual transaction balances: sum(debits) = sum(credits) per
- *       transaction_id. Only checkable because the legs share a transaction_id;
- *       without that grouping key only the global sum could be verified, which
- *       would not detect two unrelated errors cancelling out.</li>
- *   <li>Each customer account's cached balance equals its net ledger movement.
- *       This works only because opening balances are themselves ledger entries -
- *       a balance with no ledger origin could never be reconciled.</li>
+ *       transaction_id. Only checkable because the legs share that key; the global sum
+ *       alone would not detect two unrelated errors cancelling out.</li>
+ *   <li>Each customer account's cached balance equals its net ledger movement. Works only
+ *       because opening balances are themselves ledger entries.</li>
  * </ol>
  *
- * <p>It runs in two passes, and both are needed.
+ * <p>The <b>incremental</b> pass runs on a short interval over entries appended since the
+ * last watermark, so its cost tracks throughput rather than the age of a ledger that is
+ * never purged - the previous version re-derived every account from the whole history every
+ * sixty seconds. The <b>full sweep</b> runs daily and re-derives everything; it is not
+ * redundant, because the incremental pass only sees accounts appearing in new entries and
+ * is structurally blind to a balance changed with no ledger entry behind it - a direct
+ * UPDATE, a restore, a bad migration, which is the failure this control exists to catch.
  *
- * <p>The <b>incremental</b> pass runs on a short interval and looks only at
- * entries appended since the last watermark. Its cost is proportional to
- * throughput rather than to the age of the ledger, which matters because the
- * ledger is never purged: the previous version re-derived every account's
- * position from the entire history every sixty seconds, so the control got more
- * expensive every day it ran while the thing it checked did not.
- *
- * <p>The <b>full sweep</b> runs daily and re-derives everything. It is not
- * redundant: the incremental pass can only examine accounts that appear in new
- * ledger entries, so it is structurally blind to a balance changed with no
- * ledger entry behind it at all - a direct UPDATE, a restore, a bad migration.
- * That is precisely the failure this control exists to catch, and only a full
- * recomputation finds it.
- *
- * <p>System accounts are excluded from invariant 2 by design: they hold no
- * cached balance, and their position is derived from the ledger on demand.
+ * <p>System accounts are excluded from invariant 2: they hold no cached balance.
  */
 @Component
 @Slf4j
@@ -63,18 +50,15 @@ public class ReconciliationJob {
     private final JdbcClient jdbc;
     private final MeterRegistry meterRegistry;
 
-    // Gauges are set by the full sweep only. A gauge answers "how many breaches
-    // exist right now", and only a full recomputation knows that - if the
-    // incremental pass also wrote them, a quiet minute would leave a stale
-    // number standing and a busy one would overwrite the authoritative figure
-    // with a partial view.
+    // Full sweep only. A gauge answers "how many breaches exist right now", and only a full
+    // recomputation knows that - written by the incremental pass too, a quiet minute leaves
+    // a stale number standing and a busy one overwrites the authoritative figure.
     private final AtomicLong unbalancedTransactions = new AtomicLong();
     private final AtomicLong driftingAccounts       = new AtomicLong();
 
-    // The incremental pass increments a counter instead. "A breach was detected"
-    // is an event, and a counter is the instrument that survives one: it can be
-    // alerted on with increase() over a window even if the next sweep shows the
-    // problem resolved.
+    // The incremental pass counts instead: "a breach was detected" is an event, and a
+    // counter survives one - alertable with increase() even if the next sweep shows it
+    // resolved.
     private Counter breachesDetected;
 
     @PostConstruct
@@ -99,9 +83,9 @@ public class ReconciliationJob {
             return;
         }
 
-        // Both queries widen from the new entries to the whole transaction or
-        // account they belong to, because a transaction's legs can straddle the
-        // window boundary and a balance reflects an account's entire history.
+        // Both queries widen from the new entries to the whole transaction or account
+        // they belong to: a transaction's legs can straddle the window boundary, and a
+        // balance reflects an account's entire history.
         List<String> unbalanced = jdbc.sql("""
                 SELECT transaction_id::text
                   FROM ledger_entry
@@ -158,9 +142,8 @@ public class ReconciliationJob {
 
     private void log(String pass, List<String> unbalanced, long drift) {
         if (!unbalanced.isEmpty()) {
-            // Truncated deliberately: a systemic fault would otherwise put every
-            // offending id into a single log line, which is the point at which
-            // logging becomes the second incident.
+            // Truncated: a systemic fault would otherwise put every offending id into one
+            // log line, which is where logging becomes the second incident.
             log.error("RECONCILIATION BREACH ({}): {} unbalanced ledger transaction(s), first {}: {}",
                     pass, unbalanced.size(), Math.min(unbalanced.size(), MAX_IDS_LOGGED),
                     unbalanced.stream().limit(MAX_IDS_LOGGED).toList());

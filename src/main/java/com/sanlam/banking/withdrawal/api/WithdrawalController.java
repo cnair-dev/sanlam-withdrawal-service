@@ -18,15 +18,13 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * The endpoint keeps the original business capability exactly: debit an account
- * if it can cover the amount, and emit a withdrawal event.
+ * Keeps the original business capability exactly: debit an account if it can cover the
+ * amount, and emit a withdrawal event.
  *
- * The wire contract does change, deliberately: query parameters become a JSON
- * body, plain-string replies become typed responses and RFC 7807 problem
- * documents, and every response now carries a meaningful status code instead of
- * an unconditional 200. The /v1 prefix is what makes that safe - an existing
- * caller can be migrated rather than broken, and a future contract change gets
- * /v2 rather than a silent reinterpretation of this one.
+ * <p>The wire contract does change deliberately - query parameters become a JSON body,
+ * plain-string replies become typed responses and RFC 7807 problem documents, and status
+ * codes become meaningful instead of an unconditional 200. The /v1 prefix is what makes
+ * that safe: a future contract change gets /v2 rather than a silent reinterpretation.
  */
 @RestController
 @RequestMapping("/v1/bank")
@@ -52,9 +50,8 @@ public class WithdrawalController {
     public ResponseEntity<WithdrawalResponse> withdraw(
             @Valid @RequestBody WithdrawalRequest request,
 
-            // Required, not optional. For an operation that moves money, leaving
-            // idempotency to the caller's discretion guarantees that some caller
-            // will eventually double-debit on a timeout retry.
+            // Required, not optional. Leaving idempotency to the caller's discretion on an
+            // operation that moves money guarantees someone double-debits on a timeout.
             @RequestHeader("Idempotency-Key") @NotBlank String idempotencyKey,
 
             // Keys are scoped per caller so two clients cannot collide on, or

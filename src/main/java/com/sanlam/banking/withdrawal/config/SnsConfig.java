@@ -15,13 +15,10 @@ import java.net.URI;
 import java.time.Duration;
 
 /**
- * The original snippet built an SnsClient in the controller's constructor.
- * That makes the client untestable, unshareable, never closed, and ties a web
- * component to an AWS transport concern.
- *
- * SnsClient is thread-safe and expensive to create (it owns an HTTP connection
- * pool), so exactly one is created here and managed by the container, which
- * also closes it on shutdown.
+ * The original snippet built an SnsClient in the controller's constructor: untestable,
+ * unshareable, never closed, and a web component tied to an AWS transport concern.
+ * SnsClient is thread-safe and expensive to create - it owns an HTTP connection pool - so
+ * exactly one is built here and closed by the container on shutdown.
  */
 @Configuration
 @RequiredArgsConstructor
@@ -34,21 +31,17 @@ public class SnsConfig {
         SnsClientBuilder builder = SnsClient.builder()
                 .region(Region.of(awsProperties.region()))
 
-                // The relay publishes a whole batch inside one transaction, so
-                // the time a single call can take is the time row locks and a
-                // pooled connection are held. The SDK sets no API call timeout
-                // by default - only a 30s socket read, retried three times - so
-                // an unresponsive endpoint (sockets hanging rather than
-                // refusing) would stall a drain for as long as the batch size
-                // multiplied by that. These bounds make the worst case a
-                // property of configuration rather than of an inherited default.
+                // The relay publishes a batch inside one transaction, so the time a call
+                // can take is the time row locks and a pooled connection are held. The SDK
+                // sets no API call timeout by default - only a 30s socket read, retried
+                // three times - so an endpoint that hangs rather than refuses would stall
+                // a drain for batch-size times that. Bounded here rather than inherited.
                 .overrideConfiguration(c -> c
                         .apiCallTimeout(Duration.ofSeconds(10))
                         .apiCallAttemptTimeout(Duration.ofSeconds(3)));
 
-        // Present only for the local LocalStack environment; in a real deployment
-        // the endpoint and credentials come from the default AWS resolution chain
-        // (instance role / IRSA / environment), never from configuration files.
+        // LocalStack only. In a real deployment the endpoint and credentials come from
+        // the default AWS resolution chain (instance role / IRSA), never from config.
         if (StringUtils.hasText(awsProperties.endpointOverride())) {
             builder.endpointOverride(URI.create(awsProperties.endpointOverride()))
                    .credentialsProvider(StaticCredentialsProvider.create(
