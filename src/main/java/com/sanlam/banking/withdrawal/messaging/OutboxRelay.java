@@ -39,11 +39,19 @@ import java.util.List;
  * and the event id is the transaction id minted inside the withdrawal, so it is
  * stable across every republish.
  *
- * A circuit breaker was considered and deliberately left out: during an SNS
- * outage the per-row exponential backoff below already suppresses doomed calls,
- * and unlike a breaker it also handles the poison-message case. A breaker would
- * have added a dependency and a state machine without changing what happens to
- * the rows.
+ * Failures are handled by what they are rather than by how often they have
+ * happened. A message the transport rejects on its own merits is dead-lettered
+ * immediately - retrying it ten times only delays everything behind it. A
+ * transport failure backs the event off and leaves it PENDING with no attempt
+ * limit, because an event that cannot currently be delivered is an operational
+ * problem to raise, not one to discard. An earlier version counted attempts
+ * instead, which meant an SNS outage lasting longer than about eight and a half
+ * minutes quietly dead-lettered every pending event.
+ *
+ * A circuit breaker was considered and deliberately left out. Backoff already
+ * suppresses doomed calls during an outage, and the classification above is a
+ * better answer to poison messages than a breaker, which does nothing for them.
+ * See docs/decisions/0001.
  */
 @Component
 @Slf4j
@@ -70,23 +78,36 @@ public class OutboxRelay {
                         "account-" + record.aggregateId());
                 outboxRepository.markPublished(record.id());
                 metrics.recordPublish(true);
-            } catch (Exception e) {
-                // Deliberately caught per-record: one poison message must not
-                // stall the rest of the batch. markFailed is an ordinary UPDATE,
-                // so the surrounding transaction stays usable.
-                int nextAttempt = record.attemptCount() + 1;
-                outboxRepository.markFailed(record.id(), e.getMessage(),
-                        properties.maxAttempts(), properties.backoffCapSeconds());
-                metrics.recordPublish(false);
-
-                if (nextAttempt >= properties.maxAttempts()) {
-                    log.error("Outbox event {} exhausted {} attempts and was moved to FAILED (dead letter): {}",
-                            record.id(), properties.maxAttempts(), e.getMessage());
-                } else {
-                    log.warn("Outbox event {} publish failed (attempt {}/{}), backing off: {}",
-                            record.id(), nextAttempt, properties.maxAttempts(), e.getMessage());
-                }
+            } catch (EventPublishException e) {
+                // Caught per record: one bad message must not stall the batch.
+                // Both branches are ordinary UPDATEs, so the surrounding
+                // transaction stays usable.
+                handleFailure(record, e);
+            } catch (RuntimeException e) {
+                // An unclassified failure - a bug in the publisher, a
+                // serialisation fault - is treated as transient. Holding the
+                // event and raising the backlog is recoverable; discarding it
+                // is not.
+                handleFailure(record, new EventPublishException(
+                        EventPublishException.Kind.TRANSIENT, e.getMessage(), e));
             }
         }
+    }
+
+    private void handleFailure(OutboxRecord record, EventPublishException e) {
+        metrics.recordPublish(false);
+
+        if (e.isPermanent()) {
+            outboxRepository.markPermanentFailure(record.id(), e.getMessage());
+            log.error("Outbox event {} was rejected by the transport and moved to FAILED. "
+                            + "It will not be retried until requeued: {}",
+                    record.id(), e.getMessage());
+            return;
+        }
+
+        outboxRepository.markTransientFailure(record.id(), e.getMessage(),
+                properties.backoffCapSeconds());
+        log.warn("Outbox event {} publish failed (attempt {}), backing off and staying PENDING: {}",
+                record.id(), record.attemptCount() + 1, e.getMessage());
     }
 }

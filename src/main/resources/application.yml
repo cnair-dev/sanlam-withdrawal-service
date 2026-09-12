@@ -56,7 +56,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,outbox
   endpoint:
     health:
       show-details: always
@@ -102,7 +102,9 @@ app:
   outbox:
     poll-interval-ms: 2000
     batch-size: 20
-    max-attempts: 10
+    # Transient publish failures back off to this ceiling and stay PENDING.
+    # There is no attempt limit on purpose: an undeliverable event is an
+    # operational problem to alert on, not one to discard. See OutboxRepository.
     backoff-cap-seconds: 300
     backlog-warn-threshold: 100
     purge-published-after-days: 7

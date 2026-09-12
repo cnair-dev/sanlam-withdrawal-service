@@ -1,5 +1,6 @@
 package com.sanlam.banking.withdrawal;
 
+import com.sanlam.banking.withdrawal.messaging.EventPublishException;
 import com.sanlam.banking.withdrawal.messaging.EventPublisher;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -47,17 +48,25 @@ public abstract class AbstractPostgresIT {
     /** Records published events instead of calling AWS. */
     public static class RecordingEventPublisher implements EventPublisher {
         public final List<String> published = new CopyOnWriteArrayList<>();
-        private volatile boolean failing = false;
+        private volatile EventPublishException.Kind failWith = null;
 
         @Override
         public void publish(String eventType, String payload, String subject) {
-            if (failing) {
-                throw new IllegalStateException("simulated SNS outage");
+            EventPublishException.Kind kind = failWith;
+            if (kind != null) {
+                throw new EventPublishException(kind, kind == EventPublishException.Kind.PERMANENT
+                        ? "simulated malformed message" : "simulated SNS outage", null);
             }
             published.add(payload);
         }
 
-        public void setFailing(boolean failing) { this.failing = failing; }
+        public void setFailing(boolean failing) {
+            this.failWith = failing ? EventPublishException.Kind.TRANSIENT : null;
+        }
+
+        public void failWith(EventPublishException.Kind kind) {
+            this.failWith = kind;
+        }
     }
 
     @TestConfiguration

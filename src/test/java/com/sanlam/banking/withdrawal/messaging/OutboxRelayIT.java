@@ -1,7 +1,6 @@
 package com.sanlam.banking.withdrawal.messaging;
 
 import com.sanlam.banking.withdrawal.AbstractPostgresIT;
-import com.sanlam.banking.withdrawal.config.OutboxProperties;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -27,7 +26,6 @@ class OutboxRelayIT extends AbstractPostgresIT {
     @Autowired RecordingEventPublisher publisher;
     @Autowired JdbcClient jdbc;
     @Autowired PlatformTransactionManager txManager;
-    @Autowired OutboxProperties properties;
 
     @BeforeEach
     void clean() {
@@ -49,10 +47,10 @@ class OutboxRelayIT extends AbstractPostgresIT {
     }
 
     @Test
-    @DisplayName("A failing publish backs off exponentially and stays PENDING until attempts are exhausted")
-    void failedPublishBacksOffThenDeadLetters() {
+    @DisplayName("A transient failure backs off and stays PENDING, however often it repeats")
+    void transientFailureNeverDeadLetters() {
         outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1);
-        publisher.setFailing(true);
+        publisher.failWith(EventPublishException.Kind.TRANSIENT);
 
         relay.drain();
 
@@ -64,21 +62,60 @@ class OutboxRelayIT extends AbstractPostgresIT {
                         rs.getString("last_error"), rs.getBoolean("backed_off")))
                 .single();
 
-        assertThat(row.get(0)).isEqualTo(1);            // attempt recorded
-        assertThat(row.get(1)).isEqualTo("PENDING");    // not yet dead-lettered
+        assertThat(row.get(0)).isEqualTo(1);
+        assertThat(row.get(1)).isEqualTo("PENDING");
         assertThat((String) row.get(2)).contains("simulated SNS outage");
         assertThat((Boolean) row.get(3)).as("next_attempt_at moved into the future").isTrue();
 
-        // Jump to the last attempt and let it fail: the row must end in the
-        // terminal FAILED state rather than being retried forever. Derived from
-        // configuration so raising max-attempts does not quietly stop this
-        // asserting the transition.
-        jdbc.sql("UPDATE outbox_event SET attempt_count = :last, next_attempt_at = now()")
-                .param("last", properties.maxAttempts() - 1).update();
+        // The previous design dead-lettered everything after ten attempts, which
+        // meant an outage of about eight and a half minutes silently discarded
+        // the entire event stream. A transport failure must not destroy events
+        // that are themselves perfectly valid, no matter how long it lasts.
+        for (int i = 0; i < 40; i++) {
+            jdbc.sql("UPDATE outbox_event SET next_attempt_at = now()").update();
+            relay.drain();
+        }
+
+        assertThat(outboxRepository.countFailed()).isZero();
+        assertThat(outboxRepository.countPending()).isEqualTo(1L);
+        assertThat(outboxRepository.oldestPendingAgeSeconds())
+                .as("the lag gauge must keep reporting during a total outage")
+                .isGreaterThanOrEqualTo(0L);
+    }
+
+    @Test
+    @DisplayName("A message the transport rejects is dead-lettered on the first attempt")
+    void permanentFailureDeadLettersImmediately() {
+        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1);
+        publisher.failWith(EventPublishException.Kind.PERMANENT);
+
         relay.drain();
 
         assertThat(outboxRepository.countFailed()).isEqualTo(1L);
         assertThat(outboxRepository.countPending()).isZero();
+
+        // And it stays out of the claim set rather than delaying the batch behind it.
+        publisher.published.clear();
+        relay.drain();
+        assertThat(publisher.published).isEmpty();
+    }
+
+    @Test
+    @DisplayName("A dead-lettered event can be requeued once the cause is fixed")
+    void requeueReturnsDeadLettersToTheClaimSet() {
+        outboxRepository.append(1001L, "withdrawal.completed", "{\"a\":1}", 1);
+        publisher.failWith(EventPublishException.Kind.PERMANENT);
+        relay.drain();
+        assertThat(outboxRepository.countFailed()).isEqualTo(1L);
+
+        publisher.failWith(null);
+        int requeued = outboxRepository.requeueFailed();
+        relay.drain();
+
+        assertThat(requeued).isEqualTo(1);
+        assertThat(outboxRepository.countFailed()).isZero();
+        assertThat(outboxRepository.countPending()).isZero();
+        assertThat(publisher.published).hasSize(1);
     }
 
     @Test

@@ -18,10 +18,17 @@ Two distinct failure modes have to be survived:
 
 | | Failure mode | Shape |
 |---|---|---|
-| **A** | SNS unavailable, throttling, credentials expired | Broad. Affects *every* row at once. Self-resolves. |
-| **B** | Poison message — oversized payload, wrong topic ARN, malformed body | Narrow. Affects *one* row. Never self-resolves. |
+| **A** | SNS unavailable, throttling, a broker fault | Broad. Affects *every* row. Self-resolves. |
+| **B** | Poison message — oversized or malformed payload | Narrow. Affects *one* row. Never self-resolves. |
+| **C** | Misconfiguration — wrong topic ARN, expired credentials | **Broad. Affects every row. Never self-resolves.** |
 
-Any resilience mechanism chosen here has to be assessed against both.
+An earlier version of this document had only A and B, and filed a wrong topic
+ARN under B as "narrow, affects one row". That was wrong: the topic ARN is
+global configuration, so a typo fails every event. C is the quadrant that
+breaks an attempt-counting design, because the mechanism that is supposed to
+isolate one bad message instead discards the entire stream.
+
+Any resilience mechanism chosen here has to be assessed against all three.
 
 ## 2. Options considered
 
@@ -29,15 +36,16 @@ Any resilience mechanism chosen here has to be assessed against both.
 open after a failure-rate threshold, short-circuits subsequent calls, allows
 trial calls in half-open.
 
-**Option B — per-row exponential backoff with a terminal dead-letter state.**
-On failure the row records the error and schedules its own next attempt:
+**Option B — per-row exponential backoff, with failures classified by kind
+rather than counted.** The publisher, which owns the transport's error
+taxonomy, reports each failure as PERMANENT or TRANSIENT. A permanent failure
+dead-letters on the first occurrence. A transient one backs the row off and
+leaves it PENDING, with no attempt limit. The claim query only sees rows whose
+`next_attempt_at` has passed.
 
-```sql
-next_attempt_at = now() + make_interval(secs => LEAST(POWER(2, attempt_count)::int, :cap)),
-status = CASE WHEN attempt_count + 1 >= :maxAttempts THEN 'FAILED' ELSE 'PENDING' END
-```
-
-The claim query only sees rows whose `next_attempt_at` has passed.
+This is not what was originally built. The first version counted attempts and
+dead-lettered on the tenth, which is recorded in §5 along with why it had to
+change.
 
 ## 3. Decision
 
@@ -45,12 +53,16 @@ The claim query only sees rows whose `next_attempt_at` has passed.
 
 ## 4. Why
 
-**1. The breaker covers one failure mode; backoff covers both.** A breaker is a
-mechanism for failure mode A. Against B it does nothing useful — one poison row
-never trips a threshold, it simply fails forever, and behind an open breaker it
-fails forever *faster*. Backoff with an attempt cap handles A (every row backs
-off together) and B (the bad row exhausts its attempts and lands in `FAILED`,
-where it is queryable and alertable rather than invisibly looping).
+**1. The breaker covers one failure mode; classification covers all three.** A
+breaker is a mechanism for failure mode A. Against B it does nothing useful —
+one poison row never trips a threshold, it simply fails forever, and behind an
+open breaker it fails forever *faster*. Against C it trips, which suppresses
+calls but leaves the operator with no signal about *why* and no way back.
+
+Classification handles all three, and does so without reference to how often a
+failure has occurred: B dead-letters at once, A and C back off and hold. The
+distinction a breaker cannot make — is this message bad, or is the transport
+bad — is exactly the distinction that decides what should happen to the row.
 
 **2. There is no caller to protect.** A breaker's primary value is refusing to
 make a user wait on a call that is going to fail. On this path the waiting party
@@ -89,16 +101,38 @@ where one already covers both cases.
 
 Accepted consequences:
 
-- **Residual doomed calls.** During a total SNS outage the relay still makes some
-  failing calls. Backoff bounds the rate; it does not drive it to zero. A breaker
-  would get closer to zero.
-- **No explicit "downstream is down" object** to inspect or expose. Mitigated,
-  and arguably improved on, by `outbox.pending.oldest.age.seconds` — which
-  measures the thing actually worth alerting on (are events getting out?) rather
-  than a proxy for it (is a call failing?). A breaker can sit closed while the
-  backlog grows; oldest-age cannot.
-- **Fate sharing is not addressed.** With a single downstream this costs nothing.
-  See the first revisit trigger.
+- **Residual doomed calls.** During a total SNS outage the relay still makes
+  some failing calls. Backoff bounds the rate; it does not drive it to zero. A
+  breaker would get closer to zero.
+- **A transient failure that never resolves holds events indefinitely.** There
+  is no attempt limit on mode A and C failures, by design: for an AML-relevant
+  or customer-facing event, an unbounded visible backlog is better than silent
+  loss. The backlog is the alert, and `outbox.pending.oldest.age.seconds` rises
+  for as long as the condition lasts.
+- **Fate sharing is not addressed.** With a single downstream this costs
+  nothing. See the first revisit trigger.
+
+**What the first version of this decision got wrong, kept on the record because
+it is the substantive part.** The original mechanism counted attempts and moved
+a row to terminal `FAILED` on the tenth. The backoff sequence is 1, 2, 4 … 256
+seconds, so the tenth attempt falls **8 minutes 31 seconds** after the first
+failure. Any SNS outage longer than about nine minutes therefore dead-lettered
+*every pending event* — no AML reporting, no fraud scoring, no customer
+notifications for every withdrawal in the window — and there was no code path
+that moved a row back to `PENDING`, so recovery meant an operator running UPDATE
+by hand against a financial system.
+
+The nominated mitigation made it worse rather than better.
+`outbox.pending.oldest.age.seconds` filters on `status = 'PENDING'`, so once
+every row had flipped to `FAILED` the gauge returned **zero** and the lag alert
+*cleared* at the precise moment delivery had failed completely. §5 of the
+original document claimed "a breaker can sit closed while the backlog grows;
+oldest-age cannot." Oldest-age did something worse: it went quiet.
+
+None of that reverses the decision — a breaker fixes none of it — but it does
+mean the decision was being defended with an argument that did not survive
+arithmetic. Classification, plus a requeue path on the actuator surface, is the
+mechanism that argument was reaching for.
 
 ## 6. Revisit when any of these becomes true
 

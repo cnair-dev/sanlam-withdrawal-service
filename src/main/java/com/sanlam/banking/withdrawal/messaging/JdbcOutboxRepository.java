@@ -56,28 +56,58 @@ public class JdbcOutboxRepository implements OutboxRepository {
     }
 
     @Override
-    public void markFailed(long id, String error, int maxAttempts, int backoffCapSeconds) {
+    public void markTransientFailure(long id, String error, int backoffCapSeconds) {
         jdbc.sql("""
                 UPDATE outbox_event
                    SET attempt_count   = attempt_count + 1,
                        last_error      = :error,
                        -- LEAST before the cast, not after. POWER returns double
                        -- precision and ::int overflows above 2^31, so casting
-                       -- first made markFailed itself throw once attempt_count
-                       -- reached 31 - unreachable at the shipped max-attempts,
-                       -- but it would fire exactly when someone raised the limit
-                       -- to ride out a long outage.
+                       -- first made this throw once attempt_count reached 31.
                        next_attempt_at = now() + make_interval(
-                             secs => LEAST(POWER(2, attempt_count), :cap)::int),
-                       status          = CASE WHEN attempt_count + 1 >= :maxAttempts
-                                              THEN 'FAILED' ELSE 'PENDING' END
+                             secs => LEAST(POWER(2, attempt_count), :cap)::int)
                  WHERE id = :id
                 """)
-                .param("error", error == null ? null : error.substring(0, Math.min(error.length(), 1000)))
+                .param("error", truncate(error))
                 .param("cap", backoffCapSeconds)
-                .param("maxAttempts", maxAttempts)
                 .param("id", id)
                 .update();
+    }
+
+    @Override
+    public void markPermanentFailure(long id, String error) {
+        jdbc.sql("""
+                UPDATE outbox_event
+                   SET attempt_count = attempt_count + 1,
+                       last_error    = :error,
+                       status        = 'FAILED'
+                 WHERE id = :id
+                """)
+                .param("error", truncate(error))
+                .param("id", id)
+                .update();
+    }
+
+    @Override
+    public int requeueFailed() {
+        return jdbc.sql("""
+                UPDATE outbox_event
+                   SET status = 'PENDING', attempt_count = 0, next_attempt_at = now()
+                 WHERE status = 'FAILED'
+                """).update();
+    }
+
+    @Override
+    public boolean requeueFailed(long id) {
+        return jdbc.sql("""
+                UPDATE outbox_event
+                   SET status = 'PENDING', attempt_count = 0, next_attempt_at = now()
+                 WHERE id = :id AND status = 'FAILED'
+                """).param("id", id).update() == 1;
+    }
+
+    private static String truncate(String error) {
+        return error == null ? null : error.substring(0, Math.min(error.length(), 1000));
     }
 
     @Override

@@ -8,6 +8,9 @@ import software.amazon.awssdk.services.sns.SnsClient;
 import software.amazon.awssdk.services.sns.model.MessageAttributeValue;
 import software.amazon.awssdk.services.sns.model.PublishRequest;
 import software.amazon.awssdk.services.sns.model.PublishResponse;
+import software.amazon.awssdk.services.sns.model.InvalidParameterException;
+import software.amazon.awssdk.services.sns.model.InvalidParameterValueException;
+import software.amazon.awssdk.services.sns.model.ValidationException;
 
 import java.util.Map;
 
@@ -40,7 +43,22 @@ public class SnsEventPublisher implements EventPublisher {
                                 .dataType("String").stringValue(eventType).build()))
                 .build();
 
-        PublishResponse response = snsClient.publish(request);
-        log.debug("Published event to SNS: type={} messageId={}", eventType, response.messageId());
+        try {
+            PublishResponse response = snsClient.publish(request);
+            log.debug("Published event to SNS: type={} messageId={}", eventType, response.messageId());
+        } catch (InvalidParameterException | InvalidParameterValueException | ValidationException e) {
+            // The message itself was rejected - malformed, oversized, or an
+            // attribute SNS will not accept. No number of retries changes that.
+            throw new EventPublishException(EventPublishException.Kind.PERMANENT,
+                    "SNS rejected the message: " + e.getMessage(), e);
+        } catch (RuntimeException e) {
+            // Everything else is treated as transient, including the config
+            // failures - NotFoundException for a wrong topic ARN,
+            // AuthorizationErrorException for bad credentials. Those will not
+            // fix themselves, but they fail every event rather than one, so the
+            // correct response is to hold the backlog and alert, not to discard.
+            throw new EventPublishException(EventPublishException.Kind.TRANSIENT,
+                    e.getMessage(), e);
+        }
     }
 }
