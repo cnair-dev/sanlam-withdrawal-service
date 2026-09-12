@@ -12,12 +12,9 @@ CREATE TABLE accounts (
     balance         NUMERIC(19,2) NOT NULL,
     currency        CHAR(3)       NOT NULL DEFAULT 'ZAR',
     status          TEXT          NOT NULL DEFAULT 'ACTIVE',
-    overdraft_limit NUMERIC(19,2) NOT NULL DEFAULT 0.00,
     is_system       BOOLEAN       NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    CONSTRAINT accounts_status_chk   CHECK (status IN ('ACTIVE','FROZEN','DORMANT','CLOSED')),
-    CONSTRAINT accounts_scale_chk    CHECK (scale(balance) <= 2),
-    CONSTRAINT accounts_overdraft_chk CHECK (overdraft_limit >= 0)
+    CONSTRAINT accounts_status_chk CHECK (status IN ('ACTIVE','FROZEN','DORMANT','CLOSED'))
 );
 
 -- Insert-only double-entry ledger. NEVER updated or deleted.
@@ -33,8 +30,11 @@ CREATE TABLE ledger_entry (
     correlation_id TEXT          NULL,
     created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
     CONSTRAINT ledger_direction_chk CHECK (direction IN ('DEBIT','CREDIT')),
-    CONSTRAINT ledger_amount_chk    CHECK (amount > 0),
-    CONSTRAINT ledger_scale_chk     CHECK (scale(amount) <= 2)
+    -- A movement of less than one cent cannot be represented, so it is not a
+    -- movement. Note this cannot substitute for validating scale at the API
+    -- boundary: NUMERIC(19,2) coerces the value before any CHECK on it runs, so
+    -- a CHECK on scale() is a tautology and 0.005 would arrive here as 0.01.
+    CONSTRAINT ledger_amount_chk    CHECK (amount >= 0.01)
 );
 CREATE INDEX idx_ledger_txn     ON ledger_entry(transaction_id);
 CREATE INDEX idx_ledger_account ON ledger_entry(account_id, created_at);

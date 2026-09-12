@@ -15,28 +15,30 @@ public class JdbcAccountRepository implements AccountRepository {
     private final JdbcClient jdbc;
 
     /**
-     * The single most important statement in this service.
+     * Debits the account, with the balance and status checks in the same
+     * statement as the write.
      *
-     * The original code did SELECT balance, compared it in Java, then UPDATE.
-     * Between those two steps another request can read the same balance and
-     * both can pass the check - verified to produce a final balance of -20.00
-     * when two concurrent withdrawals of 60 hit a balance of 100.
+     * <p>The original code read the balance, compared it in Java, then issued a
+     * separate UPDATE. Two callers can read the same balance, both pass the
+     * check and both debit: two concurrent withdrawals of 60 against a balance
+     * of 100 leave -20.00. Keeping the predicate in the UPDATE means the row
+     * lock and the check are the same operation, so there is no window between
+     * them.
      *
-     * Here the check and the write are ONE statement. The database takes the
-     * row lock itself and evaluates the WHERE clause against the row it is
-     * about to modify. A concurrent updater blocks; when the first transaction
-     * commits, PostgreSQL RE-EVALUATES this WHERE clause against the newly
-     * committed row version. So the second statement either still qualifies
-     * (and applies correctly) or matches zero rows. A lost update is not
-     * representable.
+     * <p>This depends on READ COMMITTED, which is pinned at the pool rather than
+     * assumed. A blocked UPDATE re-reads the committed row version and
+     * re-evaluates this WHERE clause against it, so the second caller either
+     * still qualifies or matches zero rows. REPEATABLE READ and above cannot do
+     * that without breaking their own snapshot, so they raise a serialization
+     * failure instead and an ordinary insufficient-funds outcome would come back
+     * as an error needing an application retry.
      *
-     * This is safe at READ COMMITTED, and READ COMMITTED is REQUIRED rather
-     * than merely sufficient: at REPEATABLE READ or SERIALIZABLE the same
-     * statement aborts with "could not serialize access due to concurrent
-     * update" instead of re-evaluating, which would force an application-level
-     * retry loop for an ordinary insufficient-funds outcome.
+     * <p>Zero rows has three possible causes here - no such account, not active,
+     * or insufficient funds. {@code diagnose} separates them. Every other failure
+     * mode arrives as a thrown exception, so zero rows is always a business
+     * outcome.
      *
-     * RETURNING gives us the post-debit balance without a second round trip.
+     * @return the balance after the debit, or empty if the account did not qualify
      */
     @Override
     public Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount) {
@@ -45,7 +47,7 @@ public class JdbcAccountRepository implements AccountRepository {
                        SET balance = balance - :amount
                      WHERE id = :accountId
                        AND status = 'ACTIVE'
-                       AND balance - :amount >= -overdraft_limit
+                       AND balance >= :amount
                  RETURNING balance
                 """)
                 .param("accountId", accountId)
@@ -57,7 +59,7 @@ public class JdbcAccountRepository implements AccountRepository {
     @Override
     public Optional<AccountDiagnostic> diagnose(long accountId) {
         return jdbc.sql("""
-                    SELECT id, status, balance, overdraft_limit
+                    SELECT id, status, balance
                       FROM accounts
                      WHERE id = :accountId
                 """)
@@ -65,8 +67,7 @@ public class JdbcAccountRepository implements AccountRepository {
                 .query((rs, rowNum) -> new AccountDiagnostic(
                         rs.getLong("id"),
                         rs.getString("status"),
-                        rs.getBigDecimal("balance"),
-                        rs.getBigDecimal("overdraft_limit")))
+                        rs.getBigDecimal("balance")))
                 .optional();
     }
 }

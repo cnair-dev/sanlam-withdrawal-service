@@ -90,7 +90,7 @@ class WithdrawalServiceTest {
     void frozenAccount() {
         when(accounts.debitIfPermitted(anyLong(), any())).thenReturn(Optional.empty());
         when(accounts.diagnose(1001L)).thenReturn(Optional.of(
-                new AccountDiagnostic(1001L, "FROZEN", new BigDecimal("5000.00"), BigDecimal.ZERO)));
+                new AccountDiagnostic(1001L, "FROZEN", new BigDecimal("5000.00"))));
 
         assertThatThrownBy(() -> service.withdraw(command("100.00")))
                 .isInstanceOf(AccountNotActiveException.class);
@@ -101,7 +101,7 @@ class WithdrawalServiceTest {
     void insufficientFunds() {
         when(accounts.debitIfPermitted(anyLong(), any())).thenReturn(Optional.empty());
         when(accounts.diagnose(1001L)).thenReturn(Optional.of(
-                new AccountDiagnostic(1001L, "ACTIVE", new BigDecimal("10.00"), BigDecimal.ZERO)));
+                new AccountDiagnostic(1001L, "ACTIVE", new BigDecimal("10.00"))));
 
         assertThatThrownBy(() -> service.withdraw(command("100.00")))
                 .isInstanceOf(InsufficientFundsException.class);
