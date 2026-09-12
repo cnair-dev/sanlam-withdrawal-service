@@ -192,7 +192,9 @@ until JEP 491 in JDK 24; this code uses none, though HikariCP historically does.
 **No circuit breaker.** During an SNS outage the per-row exponential backoff
 already suppresses doomed calls, and unlike a breaker it also handles poison
 messages. A breaker would add a dependency and a state machine without changing
-what happens to the rows.
+what happens to the rows. This one was contested rather than obvious; the full
+argument, what it costs us and the conditions that would reverse it are recorded
+in [ADR 0001](docs/decisions/0001-no-circuit-breaker-on-the-outbox-relay.md).
 
 **Lombok** is limited to `@RequiredArgsConstructor` and `@Slf4j` on plain classes.
 Records generate their own accessors, constructor and equality.
@@ -231,6 +233,7 @@ Named because scope decisions are decisions.
 | Holds / available-balance ledger | Real accounts cannot be drawn to the full balance; authorisation lifecycle is a larger domain |
 | Daily/per-transaction limits | Real, but not part of the supplied capability |
 | Tracing (Jaeger), Grafana | Metrics are exposed at `/actuator/prometheus`; dashboards add no engineering signal to this submission |
+| Circuit breaker on the relay | Redundant with per-row backoff for outages, and insufficient alone for poison messages — [ADR 0001](docs/decisions/0001-no-circuit-breaker-on-the-outbox-relay.md) |
 | Security | Out of scope per the brief |
 
 ---
