@@ -2,14 +2,21 @@ package com.sanlam.banking.withdrawal.api;
 
 import com.sanlam.banking.withdrawal.config.CorrelationIdFilter;
 import com.sanlam.banking.withdrawal.domain.exception.*;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
+import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
+import org.springframework.lang.Nullable;
 import org.springframework.web.bind.MethodArgumentNotValidException;
-import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.net.URI;
 import java.time.Instant;
@@ -17,24 +24,33 @@ import java.util.stream.Collectors;
 
 /**
  * Replaces the original's stringly-typed replies ("Withdrawal successful",
- * "Insufficient funds for withdrawal") - all returned as HTTP 200, which no
- * client can branch on reliably.
+ * "Insufficient funds for withdrawal"), all of which were returned as HTTP 200
+ * and gave clients nothing to branch on.
  *
- * Responses use RFC 7807 ProblemDetail, the actual interoperability standard
- * for HTTP error payloads, rather than a bespoke error shape that every
- * consumer would have to learn.
+ * <p>Responses use RFC 7807 ProblemDetail rather than a bespoke error shape.
+ *
+ * <p>Extending ResponseEntityExceptionHandler is load-bearing, not decoration.
+ * ExceptionHandlerExceptionResolver runs before DefaultHandlerExceptionResolver,
+ * so an advice carrying a catch-all @ExceptionHandler(Exception.class) and
+ * nothing else intercepts every Spring MVC exception before the framework can
+ * map it - malformed JSON, an unsupported media type, a wrong method and an
+ * unknown path all become 500. On an endpoint that moves money that is worse
+ * than untidy: 500 is the signal that tells a well-behaved client the outcome
+ * was ambiguous and the request should be retried, so a permanently malformed
+ * request becomes a retry loop. The base class supplies the correct 4xx
+ * mappings; the catch-all below now only sees what nothing else claimed.
  */
 @RestControllerAdvice
 @Slf4j
-public class ApiExceptionHandler {
+public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final String BASE = "https://sanlam.co.za/problems/";
 
     /**
-     * The mapping is a pattern-matching switch over a SEALED hierarchy with no
-     * default branch. That is the point: if someone adds a new WithdrawalException
-     * subtype later, this switch stops compiling until they decide its status
-     * code, instead of silently falling through to a 500 in production.
+     * The mapping is a pattern-matching switch over a sealed hierarchy with no
+     * default branch. Adding a WithdrawalException subtype stops this compiling
+     * until someone chooses its status code, rather than letting it fall through
+     * to a 500.
      */
     @ExceptionHandler(WithdrawalException.class)
     public ProblemDetail handleWithdrawal(WithdrawalException ex) {
@@ -55,18 +71,34 @@ public class ApiExceptionHandler {
         return problem;
     }
 
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ProblemDetail handleValidation(MethodArgumentNotValidException ex) {
-        String detail = ex.getBindingResult().getFieldErrors().stream()
-                .map(f -> f.getField() + ": " + f.getDefaultMessage())
+    /**
+     * Raised by @Validated on the controller for constraints on method
+     * parameters - a present but blank Idempotency-Key, for example. A missing
+     * header is a different exception and is handled by the base class.
+     */
+    @ExceptionHandler(ConstraintViolationException.class)
+    public ProblemDetail handleConstraintViolation(ConstraintViolationException ex) {
+        String detail = ex.getConstraintViolations().stream()
+                .map(v -> v.getPropertyPath() + ": " + v.getMessage())
                 .collect(Collectors.joining("; "));
         return build(HttpStatus.BAD_REQUEST, "Invalid request", detail, "validation-failed");
     }
 
-    @ExceptionHandler(MissingRequestHeaderException.class)
-    public ProblemDetail handleMissingHeader(MissingRequestHeaderException ex) {
-        return build(HttpStatus.BAD_REQUEST, "Missing required header",
-                ex.getHeaderName() + " header is required", "missing-header");
+    /**
+     * The lock_timeout set on every pooled connection surfaces here once
+     * @Retryable has exhausted its attempts. The row is contended rather than
+     * broken, so the caller is told to come back rather than that the request
+     * failed.
+     */
+    @ExceptionHandler(CannotAcquireLockException.class)
+    public ResponseEntity<ProblemDetail> handleLockTimeout(CannotAcquireLockException ex) {
+        log.warn("Lock wait exceeded on withdrawal path: {}", ex.getMessage());
+        ProblemDetail problem = build(HttpStatus.SERVICE_UNAVAILABLE, "Account busy",
+                "The account is temporarily locked by another operation. Retry shortly.",
+                "account-busy");
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .header(HttpHeaders.RETRY_AFTER, "1")
+                .body(problem);
     }
 
     /**
@@ -76,20 +108,50 @@ public class ApiExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ProblemDetail handleUnexpected(Exception ex) {
-        log.error("Unhandled error processing withdrawal", ex);
+        log.error("Unhandled error processing request", ex);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal error",
                 "The request could not be completed.", "internal-error");
+    }
+
+    @Override
+    protected ResponseEntity<Object> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException ex, HttpHeaders headers,
+            HttpStatusCode status, WebRequest request) {
+        String detail = ex.getBindingResult().getFieldErrors().stream()
+                .map(f -> f.getField() + ": " + f.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return ResponseEntity.badRequest()
+                .body(build(HttpStatus.BAD_REQUEST, "Invalid request", detail, "validation-failed"));
+    }
+
+    /**
+     * Decorates the base class's own ProblemDetail bodies so framework-mapped
+     * errors carry the same correlation id and timestamp as the ones built here.
+     */
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(
+            Exception ex, @Nullable Object body, HttpHeaders headers,
+            HttpStatusCode statusCode, WebRequest request) {
+        ResponseEntity<Object> response = super.handleExceptionInternal(ex, body, headers, statusCode, request);
+        if (response != null && response.getBody() instanceof ProblemDetail problem) {
+            decorate(problem);
+        }
+        return response;
     }
 
     private ProblemDetail build(HttpStatus status, String title, String detail, String type) {
         ProblemDetail problem = ProblemDetail.forStatusAndDetail(status, detail);
         problem.setTitle(title);
         problem.setType(URI.create(BASE + type));
+        decorate(problem);
+        return problem;
+    }
+
+    private void decorate(ProblemDetail problem) {
         problem.setProperty("timestamp", Instant.now());
         String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY);
         if (correlationId != null) {
             problem.setProperty("correlationId", correlationId);
         }
-        return problem;
     }
 }
