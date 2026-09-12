@@ -9,6 +9,8 @@ import com.sanlam.banking.withdrawal.domain.exception.IdempotencyConflictExcepti
 import com.sanlam.banking.withdrawal.domain.exception.InsufficientFundsException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -170,16 +172,23 @@ class WithdrawalApiTest {
                 .andExpect(jsonPath("$.type").value("https://sanlam.co.za/problems/insufficient-funds"));
     }
 
-    @Test
-    @DisplayName("An inactive account is 409")
-    void frozenAccount() throws Exception {
+    @ParameterizedTest(name = "a {0} account is 409 with problem type {1}")
+    @CsvSource({
+            "FROZEN,  https://sanlam.co.za/problems/account-frozen",
+            "DORMANT, https://sanlam.co.za/problems/account-dormant",
+            "CLOSED,  https://sanlam.co.za/problems/account-closed"
+    })
+    void inactiveAccountsCarryTheirOwnProblemType(String status, String expectedType) throws Exception {
         given(withdrawalService.withdraw(any()))
-                .willThrow(new AccountNotActiveException(1003L, "FROZEN"));
+                .willThrow(new AccountNotActiveException(1003L, status));
 
+        // Same status code, different type. A caller branches on the type to
+        // decide whether to prompt reactivation, surface a hold, or stop.
         mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content(BODY)
                         .header("Idempotency-Key", "key-1"))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.title").value("Account not active"));
+                .andExpect(jsonPath("$.title").value("Account not active"))
+                .andExpect(jsonPath("$.type").value(expectedType));
     }
 
     @Test

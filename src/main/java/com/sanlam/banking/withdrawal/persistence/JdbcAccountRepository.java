@@ -33,10 +33,18 @@ public class JdbcAccountRepository implements AccountRepository {
      * failure instead and an ordinary insufficient-funds outcome would come back
      * as an error needing an application retry.
      *
-     * <p>Zero rows has three possible causes here - no such account, not active,
-     * or insufficient funds. {@code diagnose} separates them. Every other failure
-     * mode arrives as a thrown exception, so zero rows is always a business
-     * outcome.
+     * <p>System accounts are excluded here and in {@code diagnose}, so the
+     * settlement account cannot be drawn on through the customer API and is not
+     * reported as existing by it. Previously nothing forbade it - the only thing
+     * stopping a withdrawal from account 9000 was the coincidence of its balance
+     * being zero, which is not a control. Treating it as absent rather than
+     * forbidden also avoids confirming the internal account structure to a
+     * caller who guessed an id.
+     *
+     * <p>Zero rows has three possible causes here - no such customer account,
+     * not active, or insufficient funds. {@code diagnose} separates them. Every
+     * other failure mode arrives as a thrown exception, so zero rows is always a
+     * business outcome.
      *
      * @return the balance after the debit, or empty if the account did not qualify
      */
@@ -46,6 +54,7 @@ public class JdbcAccountRepository implements AccountRepository {
                     UPDATE accounts
                        SET balance = balance - :amount
                      WHERE id = :accountId
+                       AND is_system = FALSE
                        AND status = 'ACTIVE'
                        AND balance >= :amount
                  RETURNING balance
@@ -62,6 +71,7 @@ public class JdbcAccountRepository implements AccountRepository {
                     SELECT id, status, balance
                       FROM accounts
                      WHERE id = :accountId
+                       AND is_system = FALSE
                 """)
                 .param("accountId", accountId)
                 .query((rs, rowNum) -> new AccountDiagnostic(

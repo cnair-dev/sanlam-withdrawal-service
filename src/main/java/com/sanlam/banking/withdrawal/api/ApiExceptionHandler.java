@@ -58,8 +58,19 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
             case AccountNotFoundException e -> build(HttpStatus.NOT_FOUND,
                     "Account not found", e.getMessage(), "account-not-found");
 
+            // One status code, distinct problem types. All three are a conflict
+            // between the request and the account's state, but the caller's next
+            // step differs: a dormant account needs reactivating, a frozen one
+            // needs the hold lifted, a closed one is terminal. RFC 7807 type
+            // URIs are the machine-readable place for that difference, so a
+            // client can branch on it without parsing prose.
             case AccountNotActiveException e -> build(HttpStatus.CONFLICT,
-                    "Account not active", e.getMessage(), "account-not-active");
+                    "Account not active", e.getMessage(), switch (e.getStatus()) {
+                        case "FROZEN"  -> "account-frozen";
+                        case "DORMANT" -> "account-dormant";
+                        case "CLOSED"  -> "account-closed";
+                        default        -> "account-not-active";
+                    });
 
             case InsufficientFundsException e -> build(HttpStatus.UNPROCESSABLE_ENTITY,
                     "Insufficient funds", e.getMessage(), "insufficient-funds");
