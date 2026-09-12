@@ -11,6 +11,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -21,6 +22,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -236,5 +238,25 @@ class WithdrawalApiTest {
         var captor = org.mockito.ArgumentCaptor.forClass(WithdrawalCommand.class);
         verify(withdrawalService).withdraw(captor.capture());
         org.assertj.core.api.Assertions.assertThat(captor.getValue().clientId()).isEqualTo("partner-a");
+    }
+
+    @ParameterizedTest(name = "a client sending {0} debits exactly {1}")
+    @CsvSource({ "10.00, 10.00", "10.000, 10.00", "10.5, 10.50", "10, 10.00", "1000.000, 1000.00" })
+    @DisplayName("Amounts reach the service at the minor unit, whatever scale the client sent")
+    void amountIsNormalisedToTheMinorUnit(String sent, String expected) throws Exception {
+        given(withdrawalService.withdraw(any())).willReturn(ok());
+
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":1001,\"amount\":" + sent + "}")
+                        .header("Idempotency-Key", "scale-" + sent).header("X-Client-Id", "c1"))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<WithdrawalCommand> captured = ArgumentCaptor.forClass(WithdrawalCommand.class);
+        verify(withdrawalService).withdraw(captured.capture());
+
+        // Not isEqualByComparingTo: 1E+1 and 10.00 compare equal and serialise differently,
+        // and it is the serialised form that reaches the ledger, the customer and SNS.
+        assertThat(captured.getValue().amount().toPlainString()).isEqualTo(expected);
+        assertThat(captured.getValue().amount().scale()).isEqualTo(2);
     }
 }

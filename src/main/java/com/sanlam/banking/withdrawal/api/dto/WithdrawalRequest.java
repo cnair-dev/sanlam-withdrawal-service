@@ -4,6 +4,7 @@ import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 /**
  * Withdrawal request body.
@@ -15,8 +16,13 @@ import java.math.BigDecimal;
  * obvious database-side guard does not work: a CHECK on scale() cannot fire, because the
  * column coerces the value to scale 2 before the constraint is evaluated.
  *
- * <p>The compact constructor normalises before validation runs, so 100.000 and 100.00 are
- * the same request. Without it @Digits rejects any client that sends trailing zeros.
+ * <p>The compact constructor normalises to the minor unit before validation runs, so a
+ * client may send 10, 10.00 or 10.000 and the service works in 10.00 throughout. Scale is
+ * not cosmetic here: BigDecimal carries it, and 10.00 stripped of trailing zeros is 1E+1,
+ * which is what Jackson would then put in the response body and the SNS payload for a ten
+ * rand withdrawal. Two decimal places is the ZAR minor unit - the same single-currency
+ * assumption the debit predicate enforces, and it would have to become per-currency
+ * alongside it (JPY has no minor unit, KWD has three).
  */
 public record WithdrawalRequest(
         @NotNull(message = "accountId is required")
@@ -27,9 +33,18 @@ public record WithdrawalRequest(
         @Digits(integer = 17, fraction = 2, message = "amount must have at most 2 decimal places")
         BigDecimal amount
 ) {
+    /** ZAR. See the class comment before changing it. */
+    private static final int MINOR_UNIT_SCALE = 2;
+
     public WithdrawalRequest {
         if (amount != null) {
             amount = amount.stripTrailingZeros();
+            if (amount.scale() < MINOR_UNIT_SCALE) {
+                // UNNECESSARY, not HALF_UP: this branch only widens the scale, so it can
+                // never round. If that ever stops being true it should throw, not quietly
+                // decide what a customer's money rounds to.
+                amount = amount.setScale(MINOR_UNIT_SCALE, RoundingMode.UNNECESSARY);
+            }
         }
     }
 }
