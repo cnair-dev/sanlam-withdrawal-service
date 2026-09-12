@@ -37,6 +37,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
     private static final long ACCOUNT_ID = 7001L;
     private static final BigDecimal OPENING = new BigDecimal("1000.00");
     private static final BigDecimal AMOUNT  = new BigDecimal("100.00");
+    private static final long SETTLEMENT_ID = 9000L;
     private static final int THREADS = 50;
     private static final int EXPECTED_SUCCESSES = 10;   // 1000 / 100
 
@@ -45,18 +46,30 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
 
     @BeforeEach
     void seedAccount() {
+        jdbc.sql("DELETE FROM ledger_entry WHERE correlation_id = 'test-opening'").update();
         jdbc.sql("DELETE FROM ledger_entry WHERE account_id = :id").param("id", ACCOUNT_ID).update();
         jdbc.sql("DELETE FROM outbox_event WHERE aggregate_id = :id").param("id", ACCOUNT_ID).update();
         jdbc.sql("DELETE FROM idempotency_key WHERE account_id = :id").param("id", ACCOUNT_ID).update();
         jdbc.sql("DELETE FROM accounts WHERE id = :id").param("id", ACCOUNT_ID).update();
         jdbc.sql("""
-                INSERT INTO accounts(id, balance, currency, status, overdraft_limit)
-                VALUES (:id, :balance, 'ZAR', 'ACTIVE', 0.00)
+                INSERT INTO accounts(id, balance, currency, status)
+                VALUES (:id, :balance, 'ZAR', 'ACTIVE')
                 """).param("id", ACCOUNT_ID).param("balance", OPENING).update();
+
+        // Opening balance goes in as a balanced pair, matching V2. Seeding only
+        // the customer leg leaves a permanently unbalanced transaction, which
+        // would mean this test asserts its own reconciliation breach and could
+        // not detect a second one.
         jdbc.sql("""
                 INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
-                VALUES (gen_random_uuid(), :id, 'CREDIT', :amount, 'ZAR', 'test-opening')
-                """).param("id", ACCOUNT_ID).param("amount", OPENING).update();
+                VALUES (:txn, :id,         'CREDIT', :amount, 'ZAR', 'test-opening'),
+                       (:txn, :settlement, 'DEBIT',  :amount, 'ZAR', 'test-opening')
+                """)
+                .param("txn", UUID.randomUUID())
+                .param("id", ACCOUNT_ID)
+                .param("settlement", SETTLEMENT_ID)
+                .param("amount", OPENING)
+                .update();
     }
 
     @Test
@@ -92,7 +105,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
         BigDecimal finalBalance = jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
                 .param("id", ACCOUNT_ID).query(BigDecimal.class).single();
 
-        // 1. No overdraft.
+        // 1. Never overdrawn.
         assertThat(finalBalance).isGreaterThanOrEqualTo(BigDecimal.ZERO);
 
         // 2. No LOST updates - exactly the affordable number of withdrawals applied.
@@ -124,7 +137,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
                     HAVING SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END) <> 0
                 ) t
                 """).param("id", ACCOUNT_ID).query(Long.class).single();
-        assertThat(unbalanced).isEqualTo(1L); // only the synthetic test-opening credit is unpaired
+        assertThat(unbalanced).isZero();
     }
 
     @Test
