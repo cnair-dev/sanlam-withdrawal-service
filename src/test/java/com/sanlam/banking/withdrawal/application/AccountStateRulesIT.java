@@ -37,6 +37,16 @@ class AccountStateRulesIT extends AbstractPostgresIT {
         long id = NEXT_ACCOUNT.incrementAndGet();
         jdbc.sql("INSERT INTO accounts(id, balance, currency, status) VALUES (:id, 500.00, 'ZAR', :status)")
                 .param("id", id).param("status", status).update();
+        // Funded as a balanced pair, the way V2 does it. A balance with no
+        // ledger origin is a reconciliation breach, and a fixture should not
+        // leave one behind for whatever runs next.
+        jdbc.sql("""
+                INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
+                VALUES (:txn, :id,         'CREDIT', 500.00, 'ZAR', 'state-rules-opening'),
+                       (:txn, :settlement, 'DEBIT',  500.00, 'ZAR', 'state-rules-opening')
+                """)
+                .param("txn", UUID.randomUUID()).param("id", id)
+                .param("settlement", SETTLEMENT_ID).update();
         return id;
     }
 
