@@ -96,6 +96,9 @@ app:
   withdrawal:
     settlement-account-id: 9000
     default-currency: ZAR
+    # Correctness, not housekeeping: past this, the same key is a fresh key and a late
+    # retry withdraws again. Must exceed the longest legitimate caller retry window.
+    # See WithdrawalProperties before shortening it to save space.
     idempotency-ttl-hours: 24
 
   outbox:

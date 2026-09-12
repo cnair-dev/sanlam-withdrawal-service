@@ -81,6 +81,12 @@ public class JdbcIdempotencyRepository implements IdempotencyRepository {
                 .update();
     }
 
+    /**
+     * Removes keys that are already past their TTL and therefore no longer protecting
+     * anything - the claim in tryClaim treats an expired row as available regardless. This
+     * reclaims space; it does not shorten the guarantee. The TTL is what sets that, and
+     * WithdrawalProperties says why it is not a number to tune for disk.
+     */
     @Override
     public int purgeExpired() {
         return jdbc.sql("DELETE FROM idempotency_key WHERE expires_at < now()").update();
