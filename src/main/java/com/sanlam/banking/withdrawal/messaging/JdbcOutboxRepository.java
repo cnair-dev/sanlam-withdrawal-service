@@ -61,8 +61,14 @@ public class JdbcOutboxRepository implements OutboxRepository {
                 UPDATE outbox_event
                    SET attempt_count   = attempt_count + 1,
                        last_error      = :error,
+                       -- LEAST before the cast, not after. POWER returns double
+                       -- precision and ::int overflows above 2^31, so casting
+                       -- first made markFailed itself throw once attempt_count
+                       -- reached 31 - unreachable at the shipped max-attempts,
+                       -- but it would fire exactly when someone raised the limit
+                       -- to ride out a long outage.
                        next_attempt_at = now() + make_interval(
-                             secs => LEAST(POWER(2, attempt_count)::int, :cap)),
+                             secs => LEAST(POWER(2, attempt_count), :cap)::int),
                        status          = CASE WHEN attempt_count + 1 >= :maxAttempts
                                               THEN 'FAILED' ELSE 'PENDING' END
                  WHERE id = :id
