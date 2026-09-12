@@ -15,6 +15,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -34,7 +35,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Import(AbstractPostgresIT.TestPublisherConfig.class)
 class WithdrawalConcurrencyIT extends AbstractPostgresIT {
 
-    private static final long ACCOUNT_ID = 7001L;
+    // A fresh account per test. The ledger is append-only from V3, so a fixture
+    // cannot clear its rows between runs - and should not want to. Isolating on
+    // the account id instead also makes these tests independent of each other.
+    private static final AtomicLong NEXT_ACCOUNT = new AtomicLong(700_000L);
+
+    private long accountId;
+
     private static final BigDecimal OPENING = new BigDecimal("1000.00");
     private static final BigDecimal AMOUNT  = new BigDecimal("100.00");
     private static final long SETTLEMENT_ID = 9000L;
@@ -46,15 +53,11 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
 
     @BeforeEach
     void seedAccount() {
-        jdbc.sql("DELETE FROM ledger_entry WHERE correlation_id = 'test-opening'").update();
-        jdbc.sql("DELETE FROM ledger_entry WHERE account_id = :id").param("id", ACCOUNT_ID).update();
-        jdbc.sql("DELETE FROM outbox_event WHERE aggregate_id = :id").param("id", ACCOUNT_ID).update();
-        jdbc.sql("DELETE FROM idempotency_key WHERE account_id = :id").param("id", ACCOUNT_ID).update();
-        jdbc.sql("DELETE FROM accounts WHERE id = :id").param("id", ACCOUNT_ID).update();
+        accountId = NEXT_ACCOUNT.incrementAndGet();
         jdbc.sql("""
                 INSERT INTO accounts(id, balance, currency, status)
                 VALUES (:id, :balance, 'ZAR', 'ACTIVE')
-                """).param("id", ACCOUNT_ID).param("balance", OPENING).update();
+                """).param("id", accountId).param("balance", OPENING).update();
 
         // Opening balance goes in as a balanced pair, matching V2. Seeding only
         // the customer leg leaves a permanently unbalanced transaction, which
@@ -66,7 +69,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
                        (:txn, :settlement, 'DEBIT',  :amount, 'ZAR', 'test-opening')
                 """)
                 .param("txn", UUID.randomUUID())
-                .param("id", ACCOUNT_ID)
+                .param("id", accountId)
                 .param("settlement", SETTLEMENT_ID)
                 .param("amount", OPENING)
                 .update();
@@ -86,7 +89,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
                     startGate.await();           // release all threads at once
                     try {
                         WithdrawalResponse r = withdrawalService.withdraw(new WithdrawalCommand(
-                                ACCOUNT_ID, AMOUNT, "load-test",
+                                accountId, AMOUNT, "load-test",
                                 UUID.randomUUID().toString(), "corr-" + UUID.randomUUID()));
                         assertThat(r.resultingBalance()).isGreaterThanOrEqualTo(BigDecimal.ZERO);
                         successes.incrementAndGet();
@@ -103,7 +106,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
         }
 
         BigDecimal finalBalance = jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
-                .param("id", ACCOUNT_ID).query(BigDecimal.class).single();
+                .param("id", accountId).query(BigDecimal.class).single();
 
         // 1. Never overdrawn.
         assertThat(finalBalance).isGreaterThanOrEqualTo(BigDecimal.ZERO);
@@ -120,12 +123,12 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
         BigDecimal ledgerDerived = jdbc.sql("""
                 SELECT COALESCE(SUM(CASE WHEN direction = 'CREDIT' THEN amount ELSE -amount END), 0)
                   FROM ledger_entry WHERE account_id = :id
-                """).param("id", ACCOUNT_ID).query(BigDecimal.class).single();
+                """).param("id", accountId).query(BigDecimal.class).single();
         assertThat(ledgerDerived).isEqualByComparingTo(finalBalance);
 
         // 5. Every successful withdrawal produced exactly one outbox event.
         Long outboxCount = jdbc.sql("SELECT count(*) FROM outbox_event WHERE aggregate_id = :id")
-                .param("id", ACCOUNT_ID).query(Long.class).single();
+                .param("id", accountId).query(Long.class).single();
         assertThat(outboxCount).isEqualTo(EXPECTED_SUCCESSES);
 
         // 6. Every ledger transaction balanced.
@@ -136,7 +139,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
                      GROUP BY transaction_id
                     HAVING SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END) <> 0
                 ) t
-                """).param("id", ACCOUNT_ID).query(Long.class).single();
+                """).param("id", accountId).query(Long.class).single();
         assertThat(unbalanced).isZero();
     }
 
@@ -154,7 +157,7 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
                 futures.add(pool.submit(() -> {
                     gate.await();
                     withdrawalService.withdraw(new WithdrawalCommand(
-                            ACCOUNT_ID, AMOUNT, "dup-client", sharedKey, "corr-dup"));
+                            accountId, AMOUNT, "dup-client", sharedKey, "corr-dup"));
                     ok.incrementAndGet();
                     return null;
                 }));
@@ -168,13 +171,13 @@ class WithdrawalConcurrencyIT extends AbstractPostgresIT {
 
         // ...but the money moved exactly once.
         BigDecimal balance = jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
-                .param("id", ACCOUNT_ID).query(BigDecimal.class).single();
+                .param("id", accountId).query(BigDecimal.class).single();
         assertThat(balance).isEqualByComparingTo(OPENING.subtract(AMOUNT));
 
         Long debits = jdbc.sql("""
                 SELECT count(*) FROM ledger_entry
                  WHERE account_id = :id AND direction = 'DEBIT'
-                """).param("id", ACCOUNT_ID).query(Long.class).single();
+                """).param("id", accountId).query(Long.class).single();
         assertThat(debits).isEqualTo(1L);
     }
 }
