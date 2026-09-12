@@ -1,0 +1,36 @@
+<configuration>
+    <!--
+      Structured JSON logging.
+
+      Rationale: these logs are consumed by a log platform, not read off a
+      terminal. Encoding fields as JSON means correlationId and accountId are
+      queryable dimensions rather than substrings someone has to regex out of a
+      message, which is the difference between "find every log line for this
+      withdrawal" being a filter and being an incident-time archaeology exercise.
+
+      MDC values (correlationId, accountId) are included automatically.
+    -->
+    <springProfile name="!local">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdcKeyName>correlationId</includeMdcKeyName>
+                <includeMdcKeyName>accountId</includeMdcKeyName>
+                <customFields>{"service":"withdrawal-service"}</customFields>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>%d{HH:mm:ss.SSS} %-5level [%X{correlationId:-no-correlation}] %logger{36} - %msg%n</pattern>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+</configuration>

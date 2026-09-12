@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: bank
+      POSTGRES_USER: bank
+      POSTGRES_PASSWORD: bank
+    ports: ["5432:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bank -d bank"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  localstack:
+    image: localstack/localstack:3.7
+    environment:
+      SERVICES: sns,sqs
+      # Cape Town. Matches app.aws.region so the generated topic ARN lines up.
+      DEFAULT_REGION: af-south-1
+      AWS_DEFAULT_REGION: af-south-1
+      DEBUG: 0
+    ports: ["4566:4566"]
+    volumes:
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh

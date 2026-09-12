@@ -1,0 +1,105 @@
+spring:
+  application:
+    name: withdrawal-service
+
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/bank}
+    username: ${DB_USER:bank}
+    password: ${DB_PASSWORD:bank}
+    hikari:
+      # With virtual threads enabled the pool - not the thread count - is the real
+      # throughput ceiling: virtual threads let more requests WAIT cheaply, they do
+      # not let more run. Pool size is therefore the knob that matters, and it is
+      # bounded by what the database can actually service concurrently.
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      connection-timeout: 3000
+      pool-name: withdrawal-pool
+
+  threads:
+    virtual:
+      # The request path is I/O-bound (blocked on the database), so virtual threads
+      # remove the platform-thread-per-request cost. Note the JDK 21 caveat:
+      # synchronized blocks still pin a carrier thread until JEP 491 in JDK 24.
+      # This application uses none, but HikariCP historically does - which is the
+      # reason the pool is bounded conservatively above rather than relying on
+      # unbounded virtual-thread concurrency.
+      enabled: true
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      # Registers the livenessState / readinessState contributors. Without this
+      # they do not exist outside Kubernetes and the group definitions below
+      # fail application startup.
+      probes:
+        enabled: true
+      # The outbox indicator is deliberately excluded from liveness and readiness.
+      # A backlog means the broker is unhappy, not that this instance is broken -
+      # restarting pods during that incident would make it strictly worse.
+      group:
+        liveness:
+          include: livenessState,db
+        readiness:
+          include: readinessState,db
+  health:
+    status:
+      # DEGRADED is a custom status; without registering it here Spring maps
+      # unknown statuses to 200 and the severity ordering is undefined.
+      order: DOWN,OUT_OF_SERVICE,DEGRADED,UP,UNKNOWN
+      http-mapping:
+        DEGRADED: 200
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+app:
+  aws:
+    region: ${AWS_REGION:af-south-1}
+    topic-arn: ${SNS_TOPIC_ARN:arn:aws:sns:af-south-1:000000000000:withdrawal-events}
+    # Set only for LocalStack. Empty in a real deployment, where credentials come
+    # from the default AWS resolution chain (instance role / IRSA), never config.
+    endpoint-override: ${AWS_ENDPOINT_OVERRIDE:}
+    access-key: ${AWS_ACCESS_KEY_ID:test}
+    secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+
+  withdrawal:
+    settlement-account-id: 9000
+    default-currency: ZAR
+    idempotency-ttl-hours: 24
+
+  outbox:
+    poll-interval-ms: 2000
+    batch-size: 50
+    max-attempts: 10
+    backoff-cap-seconds: 300
+    backlog-warn-threshold: 100
+    purge-published-after-days: 7
+
+  reconciliation:
+    interval-ms: 60000
+    initial-delay-ms: 15000
+
+  retention:
+    cron: "0 0 3 * * *"
+
+logging:
+  level:
+    com.sanlam.banking.withdrawal: INFO

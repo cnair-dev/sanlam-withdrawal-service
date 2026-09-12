@@ -1,0 +1,43 @@
+package com.sanlam.banking.withdrawal.observability;
+
+import com.sanlam.banking.withdrawal.config.OutboxProperties;
+import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.boot.actuate.health.Health;
+import org.springframework.boot.actuate.health.HealthIndicator;
+import org.springframework.stereotype.Component;
+
+/**
+ * Reports the outbox backlog.
+ *
+ * Deliberately NOT part of the liveness or readiness groups (see
+ * application.yml): a backlog means the downstream broker is unhappy, not that
+ * this instance is broken. Wiring it into liveness would make the orchestrator
+ * restart every pod during exactly the incident this indicator exists to
+ * surface, and restarting would make the backlog worse.
+ */
+@Component("outbox")
+@RequiredArgsConstructor
+public class OutboxHealthIndicator implements HealthIndicator {
+
+    private final OutboxRepository outboxRepository;
+    private final OutboxProperties properties;
+
+    @Override
+    public Health health() {
+        long pending = outboxRepository.countPending();
+        long failed  = outboxRepository.countFailed();
+        long oldest  = outboxRepository.oldestPendingAgeSeconds();
+
+        Health.Builder builder = (failed > 0 || pending > properties.backlogWarnThreshold())
+                ? Health.status("DEGRADED")
+                : Health.up();
+
+        return builder
+                .withDetail("pending", pending)
+                .withDetail("failed", failed)
+                .withDetail("oldestPendingAgeSeconds", oldest)
+                .withDetail("backlogWarnThreshold", properties.backlogWarnThreshold())
+                .build();
+    }
+}
