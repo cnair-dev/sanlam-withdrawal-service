@@ -25,9 +25,19 @@ import java.util.List;
  * On holding the row lock across the SNS call: the general rule is never to hold
  * a CONTENDED lock across network I/O. Outbox rows are contended only by other
  * relay workers, which SKIP LOCKED past them, so the blast radius is a held
- * connection and a longer transaction - both bounded here by a small batch and
- * the SDK's request timeout. On the withdrawal path, where rows are contended by
- * live customers, no network call happens inside the transaction at all.
+ * connection and a longer transaction. That is bounded at batch-size multiplied
+ * by the SNS client's apiCallTimeout - currently 20 x 10s - and both halves of
+ * that bound are set explicitly in configuration, because the SDK does not
+ * impose an API call timeout of its own. On the withdrawal path, where rows are
+ * contended by live customers, no network call happens inside the transaction.
+ *
+ * Note this is one transaction for the whole batch, so the window between SNS
+ * accepting a publish and the row being marked published spans the rest of the
+ * batch, not one row. It cannot be closed without a distributed transaction
+ * between PostgreSQL and SNS, which is the dual-write problem again one step
+ * further downstream. At-least-once plus consumer idempotency is the answer,
+ * and the event id is the transaction id minted inside the withdrawal, so it is
+ * stable across every republish.
  *
  * A circuit breaker was considered and deliberately left out: during an SNS
  * outage the per-row exponential backoff below already suppresses doomed calls,
