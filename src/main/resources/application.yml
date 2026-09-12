@@ -15,6 +15,20 @@ spring:
       connection-timeout: 3000
       pool-name: withdrawal-pool
 
+      # The conditional debit depends on READ COMMITTED re-evaluating its WHERE
+      # clause against the newly committed row. At REPEATABLE READ and above the
+      # same statement raises a serialization failure instead, which turns an
+      # ordinary insufficient-funds result into an error. PostgreSQL's factory
+      # default is read committed, but that is a server setting a DBA or a pooler
+      # can change without touching this repository, so it is pinned here.
+      transaction-isolation: TRANSACTION_READ_COMMITTED
+
+      # Bounds how long a request can wait on a contended account row. Without it
+      # one long-held transaction backs requests up until the pool drains and
+      # callers start seeing connection timeouts instead of a useful status code.
+      # Surfaces as SQLSTATE 55P03 -> CannotAcquireLockException -> 503.
+      connection-init-sql: "SET lock_timeout = '3s'"
+
   threads:
     virtual:
       # The request path is I/O-bound (blocked on the database), so virtual threads
