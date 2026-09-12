@@ -63,7 +63,7 @@ class WithdrawalServiceTest {
     @Test
     @DisplayName("Successful withdrawal writes ledger and outbox and returns the new balance")
     void successfulWithdrawal() {
-        when(accounts.debitIfPermitted(1001L, new BigDecimal("100.00")))
+        when(accounts.debitIfPermitted(1001L, new BigDecimal("100.00"), "ZAR"))
                 .thenReturn(Optional.of(new BigDecimal("900.00")));
 
         WithdrawalResponse response = service.withdraw(command("100.00"));
@@ -78,7 +78,7 @@ class WithdrawalServiceTest {
     @Test
     @DisplayName("Zero rows plus a missing account yields AccountNotFound")
     void accountNotFound() {
-        when(accounts.debitIfPermitted(anyLong(), any())).thenReturn(Optional.empty());
+        when(accounts.debitIfPermitted(anyLong(), any(), any())).thenReturn(Optional.empty());
         when(accounts.diagnose(1001L)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.withdraw(command("100.00")))
@@ -90,9 +90,9 @@ class WithdrawalServiceTest {
     @Test
     @DisplayName("Zero rows plus a frozen account yields AccountNotActive, not InsufficientFunds")
     void frozenAccount() {
-        when(accounts.debitIfPermitted(anyLong(), any())).thenReturn(Optional.empty());
+        when(accounts.debitIfPermitted(anyLong(), any(), any())).thenReturn(Optional.empty());
         when(accounts.diagnose(1001L)).thenReturn(Optional.of(
-                new AccountDiagnostic(1001L, "FROZEN", new BigDecimal("5000.00"))));
+                new AccountDiagnostic(1001L, "FROZEN", new BigDecimal("5000.00"), "ZAR")));
 
         assertThatThrownBy(() -> service.withdraw(command("100.00")))
                 .isInstanceOf(AccountNotActiveException.class);
@@ -101,9 +101,9 @@ class WithdrawalServiceTest {
     @Test
     @DisplayName("Zero rows on an active, underfunded account yields InsufficientFunds")
     void insufficientFunds() {
-        when(accounts.debitIfPermitted(anyLong(), any())).thenReturn(Optional.empty());
+        when(accounts.debitIfPermitted(anyLong(), any(), any())).thenReturn(Optional.empty());
         when(accounts.diagnose(1001L)).thenReturn(Optional.of(
-                new AccountDiagnostic(1001L, "ACTIVE", new BigDecimal("10.00"))));
+                new AccountDiagnostic(1001L, "ACTIVE", new BigDecimal("10.00"), "ZAR")));
 
         assertThatThrownBy(() -> service.withdraw(command("100.00")))
                 .isInstanceOf(InsufficientFundsException.class);

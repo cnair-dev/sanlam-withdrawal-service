@@ -63,8 +63,9 @@ public class WithdrawalTransaction {
         }
 
         // 2. Atomic conditional debit.
-        Optional<BigDecimal> resulting =
-                accountRepository.debitIfPermitted(command.accountId(), command.amount());
+        String currency = properties.defaultCurrency();
+        Optional<BigDecimal> resulting = accountRepository.debitIfPermitted(
+                command.accountId(), command.amount(), currency);
 
         if (resulting.isEmpty()) {
             // Throwing rolls back the idempotency claim too, so a genuine retry later is
@@ -75,7 +76,6 @@ public class WithdrawalTransaction {
         BigDecimal newBalance = resulting.get();
         UUID transactionId = UUID.randomUUID();
         Instant now = Instant.now();
-        String currency = properties.defaultCurrency();
 
         // 3. Double-entry: debit the customer, credit the settlement account.
         ledgerRepository.recordWithdrawal(transactionId, command.accountId(),
@@ -108,6 +108,10 @@ public class WithdrawalTransaction {
         }
         if (!diagnostic.isActive()) {
             return new AccountNotActiveException(command.accountId(), diagnostic.status());
+        }
+        if (!properties.defaultCurrency().equals(diagnostic.currency())) {
+            return new CurrencyMismatchException(command.accountId(), diagnostic.currency(),
+                    properties.defaultCurrency());
         }
         return new InsufficientFundsException(command.accountId(), command.amount());
     }

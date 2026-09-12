@@ -13,7 +13,8 @@ import java.math.BigDecimal;
 public record AccountDiagnostic(
         long accountId,
         String status,
-        BigDecimal balance
+        BigDecimal balance,
+        String currency
 ) {
     public boolean isActive() {
         return "ACTIVE".equals(status);

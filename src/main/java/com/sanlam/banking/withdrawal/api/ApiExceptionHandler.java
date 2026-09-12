@@ -69,6 +69,11 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
 
             case IdempotencyConflictException e -> build(HttpStatus.UNPROCESSABLE_ENTITY,
                     "Idempotency key conflict", e.getMessage(), "idempotency-conflict");
+
+            // Also a conflict with the account's state, and equally not retryable by the
+            // caller: the account belongs to a service settling in a different currency.
+            case CurrencyMismatchException e -> build(HttpStatus.CONFLICT,
+                    "Currency mismatch", e.getMessage(), "currency-mismatch");
         };
         log.warn("Withdrawal rejected: {}", ex.getMessage());
         return problem;

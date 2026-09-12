@@ -12,13 +12,14 @@ import java.util.Optional;
 public interface AccountRepository {
 
     /**
-     * Atomically debit an account, enforcing status and the balance invariant inside one
-     * SQL statement.
+     * Atomically debit an account, enforcing status, currency and the balance invariant
+     * inside one SQL statement.
      *
      * @return the resulting balance, or empty if nothing was debited - no such account,
-     *         not ACTIVE, or insufficient funds, which {@link #diagnose} distinguishes
+     *         not ACTIVE, wrong currency, or insufficient funds, which {@link #diagnose}
+     *         distinguishes
      */
-    Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount);
+    Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount, String currency);
 
     /** Failure-path only: explains why {@link #debitIfPermitted} matched zero rows. */
     Optional<AccountDiagnostic> diagnose(long accountId);

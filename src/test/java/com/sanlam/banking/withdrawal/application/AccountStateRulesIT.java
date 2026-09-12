@@ -4,6 +4,7 @@ import com.sanlam.banking.withdrawal.AbstractPostgresIT;
 import com.sanlam.banking.withdrawal.domain.WithdrawalCommand;
 import com.sanlam.banking.withdrawal.domain.exception.AccountNotActiveException;
 import com.sanlam.banking.withdrawal.domain.exception.AccountNotFoundException;
+import com.sanlam.banking.withdrawal.domain.exception.CurrencyMismatchException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -44,6 +45,21 @@ class AccountStateRulesIT extends AbstractPostgresIT {
                 INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
                 VALUES (:txn, :id,         'CREDIT', 500.00, 'ZAR', 'state-rules-opening'),
                        (:txn, :settlement, 'DEBIT',  500.00, 'ZAR', 'state-rules-opening')
+                """)
+                .param("txn", UUID.randomUUID()).param("id", id)
+                .param("settlement", SETTLEMENT_ID).update();
+        return id;
+    }
+
+    /** Same shape as seed(), in a currency this service does not settle in. */
+    private long seedForeignCurrencyAccount() {
+        long id = NEXT_ACCOUNT.incrementAndGet();
+        jdbc.sql("INSERT INTO accounts(id, balance, currency, status) VALUES (:id, 500.00, 'USD', 'ACTIVE')")
+                .param("id", id).update();
+        jdbc.sql("""
+                INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
+                VALUES (:txn, :id,         'CREDIT', 500.00, 'USD', 'state-rules-opening'),
+                       (:txn, :settlement, 'DEBIT',  500.00, 'USD', 'state-rules-opening')
                 """)
                 .param("txn", UUID.randomUUID()).param("id", id)
                 .param("settlement", SETTLEMENT_ID).update();
@@ -101,5 +117,22 @@ class AccountStateRulesIT extends AbstractPostgresIT {
         var response = withdrawalService.withdraw(withdraw(accountId));
 
         assertThat(response.resultingBalance()).isEqualByComparingTo("400.00");
+    }
+
+    @Test
+    @DisplayName("An account in another currency is refused, and the balance does not move")
+    void accountInAnotherCurrencyIsRefused() {
+        long accountId = seedForeignCurrencyAccount();
+
+        assertThatThrownBy(() -> withdrawalService.withdraw(withdraw(accountId)))
+                .isInstanceOf(CurrencyMismatchException.class)
+                .hasMessageContaining("USD")
+                .hasMessageContaining("ZAR");
+
+        // The guard is in the UPDATE predicate, not a check before it, so the debit never
+        // happened rather than happening and being reported oddly.
+        BigDecimal balance = jdbc.sql("SELECT balance FROM accounts WHERE id = :id")
+                .param("id", accountId).query(BigDecimal.class).single();
+        assertThat(balance).isEqualByComparingTo("500.00");
     }
 }

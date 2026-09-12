@@ -30,6 +30,12 @@ public class JdbcAccountRepository implements AccountRepository {
      * they raise a serialization failure and an ordinary insufficient-funds outcome comes
      * back as an error needing an application retry.
      *
+     * <p>Currency is a predicate rather than an assumption. The service settles in one
+     * currency, and a ledger pair that debits a customer in one and credits settlement in
+     * another does not balance in any meaningful sense - so an account denominated in
+     * anything else is refused here rather than silently relabelled. Supporting more than
+     * one currency means a settlement account per currency, not a looser check.
+     *
      * <p>System accounts are excluded here and in {@code diagnose}, so the settlement
      * account cannot be drawn on through the customer API and is not reported as existing
      * by it. Previously the only thing stopping a withdrawal from account 9000 was the
@@ -40,18 +46,20 @@ public class JdbcAccountRepository implements AccountRepository {
      * @return the balance after the debit, or empty if the account did not qualify
      */
     @Override
-    public Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount) {
+    public Optional<BigDecimal> debitIfPermitted(long accountId, BigDecimal amount, String currency) {
         return jdbc.sql("""
                     UPDATE accounts
                        SET balance = balance - :amount
                      WHERE id = :accountId
                        AND is_system = FALSE
                        AND status = 'ACTIVE'
+                       AND currency = :currency
                        AND balance >= :amount
                  RETURNING balance
                 """)
                 .param("accountId", accountId)
                 .param("amount", amount)
+                .param("currency", currency)
                 .query(BigDecimal.class)
                 .optional();
     }
@@ -59,7 +67,7 @@ public class JdbcAccountRepository implements AccountRepository {
     @Override
     public Optional<AccountDiagnostic> diagnose(long accountId) {
         return jdbc.sql("""
-                    SELECT id, status, balance
+                    SELECT id, status, balance, currency
                       FROM accounts
                      WHERE id = :accountId
                        AND is_system = FALSE
@@ -68,7 +76,8 @@ public class JdbcAccountRepository implements AccountRepository {
                 .query((rs, rowNum) -> new AccountDiagnostic(
                         rs.getLong("id"),
                         rs.getString("status"),
-                        rs.getBigDecimal("balance")))
+                        rs.getBigDecimal("balance"),
+                        rs.getString("currency")))
                 .optional();
     }
 }

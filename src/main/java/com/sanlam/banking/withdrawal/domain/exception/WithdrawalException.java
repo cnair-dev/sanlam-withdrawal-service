@@ -11,7 +11,8 @@ package com.sanlam.banking.withdrawal.domain.exception;
  */
 public abstract sealed class WithdrawalException extends RuntimeException
         permits AccountNotFoundException, AccountNotActiveException,
-                InsufficientFundsException, IdempotencyConflictException {
+                InsufficientFundsException, IdempotencyConflictException,
+                CurrencyMismatchException {
 
     protected WithdrawalException(String message) {
         super(message);
