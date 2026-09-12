@@ -70,7 +70,7 @@ class WithdrawalServiceTest {
         assertThat(response.status()).isEqualTo("SUCCESSFUL");
         verify(ledger).recordWithdrawal(any(), eq(1001L), eq(9000L),
                 eq(new BigDecimal("100.00")), eq("ZAR"), eq("corr-1"));
-        verify(outbox).append(eq(1001L), anyString(), anyString(), anyInt());
+        verify(outbox).append(eq(1001L), anyString(), anyString(), anyInt(), eq("corr-1"));
     }
 
     @Test

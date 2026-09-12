@@ -13,22 +13,25 @@ public class JdbcOutboxRepository implements OutboxRepository {
     private final JdbcClient jdbc;
 
     @Override
-    public void append(long aggregateId, String eventType, String payload, int eventVersion) {
+    public void append(long aggregateId, String eventType, String payload, int eventVersion,
+                       String correlationId) {
         jdbc.sql("""
-                INSERT INTO outbox_event (aggregate_id, event_type, payload, event_version)
-                VALUES (:aggregateId, :eventType, CAST(:payload AS jsonb), :eventVersion)
+                INSERT INTO outbox_event (aggregate_id, event_type, payload, event_version, correlation_id)
+                VALUES (:aggregateId, :eventType, CAST(:payload AS jsonb), :eventVersion, :correlationId)
                 """)
                 .param("aggregateId", aggregateId)
                 .param("eventType", eventType)
                 .param("payload", payload)
                 .param("eventVersion", eventVersion)
+                .param("correlationId", correlationId)
                 .update();
     }
 
     @Override
     public List<OutboxRecord> claimBatch(int batchSize) {
         return jdbc.sql("""
-                SELECT id, aggregate_id, event_type, CAST(payload AS text) AS payload, attempt_count
+                SELECT id, aggregate_id, event_type, CAST(payload AS text) AS payload,
+                       attempt_count, correlation_id
                   FROM outbox_event
                  WHERE status = 'PENDING'
                    AND next_attempt_at <= now()
@@ -42,7 +45,8 @@ public class JdbcOutboxRepository implements OutboxRepository {
                         rs.getLong("aggregate_id"),
                         rs.getString("event_type"),
                         rs.getString("payload"),
-                        rs.getInt("attempt_count")))
+                        rs.getInt("attempt_count"),
+                        rs.getString("correlation_id")))
                 .list();
     }
 

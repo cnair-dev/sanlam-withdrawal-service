@@ -92,7 +92,7 @@ public class WithdrawalTransaction {
         WithdrawalEvent event = WithdrawalEvent.completed(transactionId, command.accountId(),
                 command.amount(), newBalance, currency, command.correlationId(), now);
         outboxRepository.append(command.accountId(), WithdrawalEvent.TYPE,
-                serialise(event), WithdrawalEvent.VERSION);
+                serialise(event), WithdrawalEvent.VERSION, command.correlationId());
 
         WithdrawalResponse response = new WithdrawalResponse(transactionId, command.accountId(),
                 command.amount(), newBalance, currency, "SUCCESSFUL", now);

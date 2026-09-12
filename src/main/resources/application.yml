@@ -83,6 +83,24 @@ management:
   metrics:
     tags:
       application: ${spring.application.name}
+    distribution:
+      # Without this the timers publish count, sum and max only, which is enough
+      # for an average and useless for an SLO - and an average latency on a
+      # payment endpoint hides exactly the tail that matters. Histogram buckets
+      # are what let p95 and p99 be computed at query time, and aggregated
+      # correctly across instances, which client-side percentiles cannot be.
+      percentiles-histogram:
+        withdrawal.duration: true
+        http.server.requests: true
+      # Buckets chosen around the latencies this endpoint should actually meet.
+      # Publishing every default bucket multiplies series count for no benefit.
+      slo:
+        withdrawal.duration: 25ms,50ms,100ms,250ms,500ms,1s,3s
+        http.server.requests: 50ms,100ms,250ms,500ms,1s,3s
+      minimum-expected-value:
+        withdrawal.duration: 5ms
+      maximum-expected-value:
+        withdrawal.duration: 10s
 
 app:
   aws:

@@ -5,7 +5,8 @@ import java.util.List;
 public interface OutboxRepository {
 
     /** Written in the SAME transaction as the balance and ledger changes. */
-    void append(long aggregateId, String eventType, String payload, int eventVersion);
+    void append(long aggregateId, String eventType, String payload, int eventVersion,
+                String correlationId);
 
     /**
      * Claim a batch of due events for this worker.

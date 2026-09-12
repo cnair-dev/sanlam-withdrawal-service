@@ -3,7 +3,9 @@ package com.sanlam.banking.withdrawal.messaging;
 import com.sanlam.banking.withdrawal.config.OutboxProperties;
 import com.sanlam.banking.withdrawal.observability.WithdrawalMetrics;
 import lombok.RequiredArgsConstructor;
+import com.sanlam.banking.withdrawal.config.CorrelationIdFilter;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -73,6 +75,14 @@ public class OutboxRelay {
         log.debug("Outbox relay claimed {} event(s)", batch.size());
 
         for (OutboxRecord record : batch) {
+            // The relay runs on the scheduler thread and inherits nothing from
+            // the request that produced the event, so without this every
+            // publish-side log line - including the ones read during an incident
+            // - is unattributable. Restored per record because one batch spans
+            // many unrelated requests.
+            if (record.correlationId() != null) {
+                MDC.put(CorrelationIdFilter.MDC_KEY, record.correlationId());
+            }
             try {
                 eventPublisher.publish(record.eventType(), record.payload(),
                         "account-" + record.aggregateId());
@@ -90,6 +100,8 @@ public class OutboxRelay {
                 // is not.
                 handleFailure(record, new EventPublishException(
                         EventPublishException.Kind.TRANSIENT, e.getMessage(), e));
+            } finally {
+                MDC.remove(CorrelationIdFilter.MDC_KEY);
             }
         }
     }
