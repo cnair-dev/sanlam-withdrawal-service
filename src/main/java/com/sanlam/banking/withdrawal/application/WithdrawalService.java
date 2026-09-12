@@ -61,19 +61,32 @@ public class WithdrawalService {
         Timer.Sample sample = Timer.start();
         String requestHash = hash(command);
         try {
-            WithdrawalResponse response = withdrawalTransaction.execute(command, requestHash);
-            metrics.recordAttempt("success");
-            return response;
-        } catch (IdempotentReplayException e) {
-            // The transaction rolled back, so nothing was half-applied. The
-            // winning request has committed, so its response is now readable.
-            WithdrawalResponse replayed = replay(command, requestHash);
-            metrics.recordAttempt("idempotent_replay");
-            metrics.recordIdempotentReplay();
-            return replayed;
-        } catch (WithdrawalException e) {
-            metrics.recordAttempt(e.getClass().getSimpleName());
-            throw e;
+            try {
+                WithdrawalResponse response = withdrawalTransaction.execute(command, requestHash);
+                metrics.recordAttempt("success");
+                return response;
+            } catch (IdempotentReplayException e) {
+                // The transaction rolled back, so nothing was half-applied. The
+                // winning request has committed, so its response is readable.
+                // Fall through - the replay happens below, not here.
+            } catch (WithdrawalException e) {
+                metrics.recordAttempt(e.getClass().getSimpleName());
+                throw e;
+            }
+
+            // Deliberately outside the catch above. A throw from inside a catch
+            // block is not caught by a sibling catch on the same try, so running
+            // the replay there let IdempotencyConflictException - the one outcome
+            // that signals a client integration bug - escape uncounted.
+            try {
+                WithdrawalResponse replayed = replay(command, requestHash);
+                metrics.recordAttempt("idempotent_replay");
+                metrics.recordIdempotentReplay();
+                return replayed;
+            } catch (WithdrawalException e) {
+                metrics.recordAttempt(e.getClass().getSimpleName());
+                throw e;
+            }
         } finally {
             sample.stop(metrics.duration());
         }
