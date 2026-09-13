@@ -26,38 +26,27 @@ Java 21 · Spring Boot 3.3.5 · PostgreSQL (JdbcClient + Flyway) · AWS SNS · T
 ## Design
 
 ```mermaid
-flowchart LR
-    Client(["Client"])
+flowchart TB
+    Client(["Client"]) --> API["WithdrawalController<br/>POST /v1/bank/withdraw"]
+    API --> APP["WithdrawalService<br/><i>retry boundary</i>"]
+    APP --> TXN["WithdrawalTransaction<br/><b>one transaction, four writes</b>"]
 
-    subgraph SVC["withdrawal-service"]
-        direction TB
-        API["WithdrawalController<br/>/v1/bank/withdraw"]
-        APP["WithdrawalService<br/><i>retry boundary</i>"]
-        TXN["WithdrawalTransaction<br/><b>the unit of work</b>"]
-        RELAY["OutboxRelay<br/><i>poll 2s</i>"]
-        RECON["ReconciliationJob<br/><i>daily full sweep</i>"]
-        API --> APP --> TXN
-    end
+    TXN --> IDK[("idempotency_key")]
+    TXN --> ACC[("accounts")]
+    TXN --> LED[("ledger_entry<br/><i>append-only</i>")]
+    TXN --> OBX[("outbox_event")]
 
-    subgraph DB["PostgreSQL"]
-        direction TB
-        ACC["accounts"]
-        LED["ledger_entry<br/><i>append-only</i>"]
-        OBX["outbox_event"]
-        IDK["idempotency_key"]
-    end
+    RELAY["OutboxRelay<br/><i>polls every 2s</i>"] --> OBX
+    RELAY --> SNS(["AWS SNS"])
+    SNS --> CONS["AML · fraud · notification · statements"]
 
-    SNS(["AWS SNS"])
-    CONS["AML · fraud · notification · statements"]
+    RECON["ReconciliationJob<br/><i>daily full sweep</i>"] --> ACC
+    RECON --> LED
 
-    Client --> API
-    TXN --> ACC & LED & OBX & IDK
-    RELAY --> OBX
-    RELAY --> SNS --> CONS
-    RECON --> ACC & LED
-
-    classDef store fill:#f6f8fa,stroke:#8b949e
-    class DB store
+    classDef store fill:#eef2f7,stroke:#7d8da1,color:#1c2430
+    classDef job fill:#fff6e5,stroke:#c9922e,color:#1c2430
+    class IDK,ACC,LED,OBX store
+    class RELAY,RECON job
 ```
 
 One transaction covers all four writes. The relay and the reconciliation run afterwards, on
