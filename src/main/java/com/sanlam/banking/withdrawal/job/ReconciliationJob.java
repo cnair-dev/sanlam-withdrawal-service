@@ -97,7 +97,7 @@ public class ReconciliationJob {
                  WHERE transaction_id IN (
                            SELECT DISTINCT transaction_id FROM ledger_entry
                             WHERE id > :from AND id <= :to)
-                 GROUP BY transaction_id
+                 GROUP BY transaction_id, currency
                 HAVING SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END) <> 0
                 """).param("from", from).param("to", to).query(String.class).list();
 
@@ -110,7 +110,7 @@ public class ReconciliationJob {
                    AND a.balance <> COALESCE((
                            SELECT SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END)
                              FROM ledger_entry l
-                            WHERE l.account_id = a.id), 0)
+                            WHERE l.account_id = a.id AND l.currency = a.currency), 0)
                 """).param("from", from).param("to", to).query(Long.class).single();
 
         breachesDetected.increment(unbalanced.size() + drift);
@@ -124,10 +124,13 @@ public class ReconciliationJob {
                zone = "${app.schedule.zone:Africa/Johannesburg}")
     @Transactional(readOnly = true)
     public void reconcileEverything() {
+        // Grouped by currency in both invariants. Amounts in different currencies are not
+        // addable, so a sum across them is a number with no meaning - and the settlement
+        // account is exactly where entries in more than one would collect.
         List<String> unbalanced = jdbc.sql("""
                 SELECT transaction_id::text
                   FROM ledger_entry
-                 GROUP BY transaction_id
+                 GROUP BY transaction_id, currency
                 HAVING SUM(CASE WHEN direction = 'DEBIT' THEN amount ELSE -amount END) <> 0
                 """).query(String.class).list();
 
@@ -138,7 +141,7 @@ public class ReconciliationJob {
                    AND a.balance <> COALESCE((
                            SELECT SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END)
                              FROM ledger_entry l
-                            WHERE l.account_id = a.id), 0)
+                            WHERE l.account_id = a.id AND l.currency = a.currency), 0)
                 """).query(Long.class).single();
 
         unbalancedTransactions.set(unbalanced.size());

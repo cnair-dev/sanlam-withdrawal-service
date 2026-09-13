@@ -64,24 +64,26 @@ public class WithdrawalService {
                 return response;
             } catch (IdempotentReplayException e) {
                 // Rolled back, so nothing was half-applied, and the winner has committed so
-                // its response is readable. Replay happens below, not here.
-            } catch (WithdrawalException e) {
-                metrics.recordAttempt(e.getClass().getSimpleName());
-                throw e;
+                // its response is readable.
             }
 
-            // Outside the catch above on purpose: a throw from inside a catch block is not
-            // caught by a sibling catch on the same try, so replaying there let
-            // IdempotencyConflictException escape uncounted.
-            try {
-                WithdrawalResponse replayed = replay(command, requestHash);
-                metrics.recordAttempt("idempotent_replay");
-                metrics.recordIdempotentReplay();
-                return replayed;
-            } catch (WithdrawalException e) {
-                metrics.recordAttempt(e.getClass().getSimpleName());
-                throw e;
-            }
+            // Deliberately out here rather than inside the catch above: a throw from within
+            // a catch block is not caught by a sibling catch on the same try, so a conflict
+            // raised during replay would escape the counters below.
+            WithdrawalResponse replayed = replay(command, requestHash);
+            metrics.recordAttempt("idempotent_replay");
+            metrics.recordIdempotentReplay();
+            return replayed;
+
+        } catch (WithdrawalException e) {
+            metrics.recordAttempt(e.getClass().getSimpleName());
+            throw e;
+        } catch (RuntimeException e) {
+            // Everything that is not a business outcome: a lock timeout, a dead connection,
+            // a bug. These used to pass through uncounted, so withdrawal.attempts described
+            // successes and refusals and was silent about the failures you would page on.
+            metrics.recordAttempt("infrastructure_failure");
+            throw e;
         } finally {
             sample.stop(metrics.duration());
         }
