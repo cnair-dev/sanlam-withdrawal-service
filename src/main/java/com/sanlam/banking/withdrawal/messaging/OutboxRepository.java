@@ -2,8 +2,17 @@ package com.sanlam.banking.withdrawal.messaging;
 
 import java.util.List;
 
-/** The delivery side of the outbox. Used only by the relay. */
-public interface OutboxRelayStore {
+/**
+ * Everything the outbox does except append: claiming and marking on the delivery side,
+ * counting and repairing on the operational side.
+ *
+ * <p>{@link OutboxAppender} is separate because it is the only part of the outbox that runs
+ * inside the withdrawal's transaction, and the only part whose failure rolls back a
+ * customer's money. That narrowing is worth a file. Splitting delivery from operations as
+ * well would be interface segregation applied for its own sake - both sides talk to the
+ * same table through the same bean, and nothing becomes unreachable by naming it twice.
+ */
+public interface OutboxRepository {
 
     /**
      * Claims a batch of due events. Correctness comes from holding a row lock while
@@ -35,4 +44,20 @@ public interface OutboxRelayStore {
      * there is nothing to wait for, and it delays everything behind it.
      */
     void markPermanentFailure(long id, String error);
+
+    long countPending();
+
+    /** Oldest pending event age - a more meaningful lag SLO than queue depth. */
+    long oldestPendingAgeSeconds();
+
+    long countFailed();
+
+    /**
+     * Move a dead-lettered event back into the claim set once whatever made it
+     * unpublishable has been fixed. Without this, recovery is an operator running UPDATE
+     * against a financial system by hand.
+     */
+    boolean requeueFailed(long id);
+
+    int purgePublishedOlderThanDays(int days);
 }

@@ -46,7 +46,7 @@ import java.util.List;
 @RequiredArgsConstructor
 public class OutboxRelay {
 
-    private final OutboxRelayStore outboxRelayStore;
+    private final OutboxRepository outboxRepository;
     private final EventPublisher eventPublisher;
     private final OutboxProperties properties;
     private final WithdrawalMetrics metrics;
@@ -54,7 +54,7 @@ public class OutboxRelay {
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:2000}")
     @Transactional
     public void drain() {
-        List<OutboxRecord> batch = outboxRelayStore.claimBatch(properties.batchSize());
+        List<OutboxRecord> batch = outboxRepository.claimBatch(properties.batchSize());
         if (batch.isEmpty()) {
             return;
         }
@@ -70,7 +70,7 @@ public class OutboxRelay {
             try {
                 eventPublisher.publish(record.eventType(), record.payload(),
                         "account-" + record.aggregateId());
-                outboxRelayStore.markPublished(record.id());
+                outboxRepository.markPublished(record.id());
                 metrics.recordPublish(true);
             } catch (EventPublishException e) {
                 // Per record: one bad message must not stall the batch. Both branches of
@@ -91,14 +91,14 @@ public class OutboxRelay {
         metrics.recordPublish(false);
 
         if (e.isPermanent()) {
-            outboxRelayStore.markPermanentFailure(record.id(), e.getMessage());
+            outboxRepository.markPermanentFailure(record.id(), e.getMessage());
             log.error("Outbox event {} was rejected by the transport and moved to FAILED. "
                             + "It will not be retried until requeued: {}",
                     record.id(), e.getMessage());
             return;
         }
 
-        outboxRelayStore.markTransientFailure(record.id(), e.getMessage(),
+        outboxRepository.markTransientFailure(record.id(), e.getMessage(),
                 properties.backoffCapSeconds());
         log.warn("Outbox event {} publish failed (attempt {}), backing off and staying PENDING: {}",
                 record.id(), record.attemptCount() + 1, e.getMessage());

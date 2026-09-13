@@ -1,7 +1,7 @@
 package com.sanlam.banking.withdrawal.job;
 
 import com.sanlam.banking.withdrawal.config.OutboxProperties;
-import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
+import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
 import com.sanlam.banking.withdrawal.persistence.IdempotencyRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class RetentionJob {
 
-    private final OutboxOperations outboxOperations;
+    private final OutboxRepository outboxRepository;
     private final IdempotencyRepository idempotencyRepository;
     private final OutboxProperties outboxProperties;
 
@@ -37,7 +37,7 @@ public class RetentionJob {
                zone = "${app.schedule.zone:Africa/Johannesburg}")
     @Transactional
     public void purge() {
-        int outboxPurged = outboxOperations
+        int outboxPurged = outboxRepository
                 .purgePublishedOlderThanDays(outboxProperties.purgePublishedAfterDays());
         int keysPurged = idempotencyRepository.purgeExpired();
         log.info("Retention purge complete: outboxRows={} idempotencyKeys={}", outboxPurged, keysPurged);

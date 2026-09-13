@@ -9,7 +9,7 @@ import java.util.List;
 @Repository
 @RequiredArgsConstructor
 public class JdbcOutboxRepository
-        implements OutboxAppender, OutboxRelayStore, OutboxOperations {
+        implements OutboxAppender, OutboxRepository {
 
     private final JdbcClient jdbc;
 
@@ -97,15 +97,6 @@ public class JdbcOutboxRepository
                 .param("error", truncate(error))
                 .param("id", id)
                 .update();
-    }
-
-    @Override
-    public int requeueFailed() {
-        return jdbc.sql("""
-                UPDATE outbox_event
-                   SET status = 'PENDING', attempt_count = 0, next_attempt_at = now()
-                 WHERE status = 'FAILED'
-                """).update();
     }
 
     @Override

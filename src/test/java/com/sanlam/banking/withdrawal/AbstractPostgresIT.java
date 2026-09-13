@@ -46,7 +46,7 @@ public abstract class AbstractPostgresIT {
                 () -> "classpath:db/migration,classpath:db/seed");
         // Relay and jobs are driven explicitly in tests, not by the scheduler.
         registry.add("app.outbox.poll-interval-ms", () -> "3600000");
-        registry.add("app.reconciliation.initial-delay-ms", () -> "3600000");
+
     }
 
     /** Records published events instead of calling AWS. */

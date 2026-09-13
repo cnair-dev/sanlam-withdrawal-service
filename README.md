@@ -36,7 +36,7 @@ flowchart LR
         APP["WithdrawalService<br/><i>retry boundary</i>"]
         TXN["WithdrawalTransaction<br/><b>the unit of work</b>"]
         RELAY["OutboxRelay<br/><i>poll 2s</i>"]
-        RECON["ReconciliationJob<br/><i>incremental + daily sweep</i>"]
+        RECON["ReconciliationJob<br/><i>daily full sweep</i>"]
         API --> APP --> TXN
     end
 

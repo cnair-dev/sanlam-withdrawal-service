@@ -23,8 +23,7 @@ class OutboxRelayIT extends AbstractPostgresIT {
 
     @Autowired OutboxRelay relay;
     @Autowired OutboxAppender outboxAppender;
-    @Autowired OutboxRelayStore outboxRelayStore;
-    @Autowired OutboxOperations outboxOperations;
+    @Autowired OutboxRepository outboxRepository;
     @Autowired RecordingEventPublisher publisher;
     @Autowired JdbcClient jdbc;
     @Autowired PlatformTransactionManager txManager;
@@ -45,7 +44,7 @@ class OutboxRelayIT extends AbstractPostgresIT {
         relay.drain();
 
         assertThat(publisher.published).hasSize(2);
-        assertThat(outboxOperations.countPending()).isZero();
+        assertThat(outboxRepository.countPending()).isZero();
     }
 
     @Test
@@ -78,9 +77,9 @@ class OutboxRelayIT extends AbstractPostgresIT {
             relay.drain();
         }
 
-        assertThat(outboxOperations.countFailed()).isZero();
-        assertThat(outboxOperations.countPending()).isEqualTo(1L);
-        assertThat(outboxOperations.oldestPendingAgeSeconds())
+        assertThat(outboxRepository.countFailed()).isZero();
+        assertThat(outboxRepository.countPending()).isEqualTo(1L);
+        assertThat(outboxRepository.oldestPendingAgeSeconds())
                 .as("the lag gauge must keep reporting during a total outage")
                 .isGreaterThanOrEqualTo(0L);
     }
@@ -93,8 +92,8 @@ class OutboxRelayIT extends AbstractPostgresIT {
 
         relay.drain();
 
-        assertThat(outboxOperations.countFailed()).isEqualTo(1L);
-        assertThat(outboxOperations.countPending()).isZero();
+        assertThat(outboxRepository.countFailed()).isEqualTo(1L);
+        assertThat(outboxRepository.countPending()).isZero();
 
         // And it stays out of the claim set rather than delaying the batch behind it.
         publisher.published.clear();
@@ -108,15 +107,18 @@ class OutboxRelayIT extends AbstractPostgresIT {
         outboxAppender.append(1001L, "withdrawal.completed", "{\"a\":1}", 1, "corr-test");
         publisher.failWith(EventPublishException.Kind.PERMANENT);
         relay.drain();
-        assertThat(outboxOperations.countFailed()).isEqualTo(1L);
+        assertThat(outboxRepository.countFailed()).isEqualTo(1L);
+
+        long failedId = jdbc.sql("SELECT id FROM outbox_event WHERE status = 'FAILED'")
+                .query(Long.class).single();
 
         publisher.failWith(null);
-        int requeued = outboxOperations.requeueFailed();
+        boolean requeued = outboxRepository.requeueFailed(failedId);
         relay.drain();
 
-        assertThat(requeued).isEqualTo(1);
-        assertThat(outboxOperations.countFailed()).isZero();
-        assertThat(outboxOperations.countPending()).isZero();
+        assertThat(requeued).isTrue();
+        assertThat(outboxRepository.countFailed()).isZero();
+        assertThat(outboxRepository.countPending()).isZero();
         assertThat(publisher.published).hasSize(1);
     }
 
@@ -162,7 +164,7 @@ class OutboxRelayIT extends AbstractPostgresIT {
         var txTemplate = new TransactionTemplate(txManager);
 
         Runnable claim = () -> batches.add(
-                outboxRelayStore.claimBatch(3).stream().map(OutboxRecord::id).toList());
+                outboxRepository.claimBatch(3).stream().map(OutboxRecord::id).toList());
 
         Thread first = Thread.ofVirtual().start(() -> txTemplate.executeWithoutResult(tx -> {
             claim.run();

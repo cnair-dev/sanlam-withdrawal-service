@@ -1,6 +1,6 @@
 package com.sanlam.banking.withdrawal.observability;
 
-import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
+import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.boot.actuate.health.Health;
 import org.springframework.boot.actuate.health.HealthIndicator;
@@ -22,14 +22,14 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class OutboxHealthIndicator implements HealthIndicator {
 
-    private final OutboxOperations outboxOperations;
+    private final OutboxRepository outboxRepository;
 
     @Override
     public Health health() {
         return Health.up()
-                .withDetail("pending", outboxOperations.countPending())
-                .withDetail("failed", outboxOperations.countFailed())
-                .withDetail("oldestPendingAgeSeconds", outboxOperations.oldestPendingAgeSeconds())
+                .withDetail("pending", outboxRepository.countPending())
+                .withDetail("failed", outboxRepository.countFailed())
+                .withDetail("oldestPendingAgeSeconds", outboxRepository.oldestPendingAgeSeconds())
                 .build();
     }
 }

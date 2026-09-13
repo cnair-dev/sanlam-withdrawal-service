@@ -1,6 +1,6 @@
 package com.sanlam.banking.withdrawal.observability;
 
-import com.sanlam.banking.withdrawal.messaging.OutboxOperations;
+import com.sanlam.banking.withdrawal.messaging.OutboxRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
@@ -30,14 +30,14 @@ import java.util.Map;
 @Slf4j
 public class OutboxOperationsEndpoint {
 
-    private final OutboxOperations outboxOperations;
+    private final OutboxRepository outboxRepository;
 
     @ReadOperation
     public Map<String, Object> status() {
         return Map.of(
-                "pending", outboxOperations.countPending(),
-                "failed", outboxOperations.countFailed(),
-                "oldestPendingAgeSeconds", outboxOperations.oldestPendingAgeSeconds());
+                "pending", outboxRepository.countPending(),
+                "failed", outboxRepository.countFailed(),
+                "oldestPendingAgeSeconds", outboxRepository.oldestPendingAgeSeconds());
     }
 
     /**
@@ -51,7 +51,7 @@ public class OutboxOperationsEndpoint {
     @WriteOperation
     @Transactional
     public Map<String, Object> requeueOne(@Selector long id) {
-        boolean requeued = outboxOperations.requeueFailed(id);
+        boolean requeued = outboxRepository.requeueFailed(id);
         log.warn("Operator requeue of outbox event {}: {}", id, requeued ? "requeued" : "not in FAILED");
         return Map.of("id", id, "requeued", requeued);
     }

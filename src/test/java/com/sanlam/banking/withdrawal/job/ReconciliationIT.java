@@ -10,16 +10,14 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 import java.util.UUID;
-import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * A control nobody tests is a control nobody can rely on. These assert that the
- * reconciliation actually detects the breaches it exists to detect, and - just
- * as importantly - that the incremental pass is blind to the one class of
- * breach only the full sweep can find.
+ * A control nobody tests is a control nobody can rely on. These assert that reconciliation
+ * detects the two breaches it exists to detect, and names the account, so they do not pass
+ * by coincidence of whatever else the suite left behind.
  */
 @SpringBootTest
 @Import(AbstractPostgresIT.TestPublisherConfig.class)
@@ -36,15 +34,7 @@ class ReconciliationIT extends AbstractPostgresIT {
         return meterRegistry.get(name).gauge().value();
     }
 
-    private double breachesDetected() {
-        return meterRegistry.get("ledger.reconciliation.breaches").counter().count();
-    }
-
-    private long watermark() {
-        return jdbc.sql("SELECT last_ledger_id FROM reconciliation_watermark").query(Long.class).single();
-    }
-
-    /** An account funded the way V2 funds one: balance and a balanced ledger pair. */
+    /** An account funded the way the seed funds one: balance and a balanced ledger pair. */
     private long seedFundedAccount(String amount) {
         long id = NEXT_ACCOUNT.incrementAndGet();
         jdbc.sql("INSERT INTO accounts(id, balance, currency, status) VALUES (:id, CAST(:amt AS numeric), 'ZAR', 'ACTIVE')")
@@ -59,100 +49,64 @@ class ReconciliationIT extends AbstractPostgresIT {
         return id;
     }
 
-    @Test
-    @DisplayName("A consistent ledger reconciles clean, and the watermark advances")
-    void consistentLedgerReconciles() {
-        seedFundedAccount("400.00");
-        long before = watermark();
-
-        double breachesBefore = breachesDetected();
-
-        reconciliation.reconcileIncrementally();
-
-        assertThat(breachesDetected()).isEqualTo(breachesBefore);
-        assertThat(watermark()).isGreaterThan(before);
+    /** Does this specific account disagree with its own ledger? */
+    private boolean drifts(long accountId) {
+        return jdbc.sql("""
+                SELECT a.balance <> COALESCE((
+                           SELECT SUM(CASE WHEN l.direction = 'CREDIT' THEN l.amount ELSE -l.amount END)
+                             FROM ledger_entry l
+                            WHERE l.account_id = a.id AND l.currency = a.currency), 0)
+                  FROM accounts a WHERE a.id = :id
+                """).param("id", accountId).query(Boolean.class).single();
     }
 
     @Test
-    @DisplayName("A one-legged transaction is caught by the incremental pass")
+    @DisplayName("A consistent account reconciles clean")
+    void consistentLedgerReconciles() {
+        long accountId = seedFundedAccount("400.00");
+
+        reconciliation.reconcile();
+
+        assertThat(drifts(accountId)).isFalse();
+    }
+
+    @Test
+    @DisplayName("A one-legged transaction is reported as unbalanced")
     void unbalancedTransactionIsDetected() {
+        UUID orphan = UUID.randomUUID();
         long accountId = seedFundedAccount("100.00");
-        reconciliation.reconcileIncrementally();   // start from a clean watermark
 
         // A credit with no matching debit: money appearing from nowhere.
         jdbc.sql("""
                 INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
                 VALUES (:txn, :id, 'CREDIT', 25.00, 'ZAR', 'recon-test-unbalanced')
-                """).param("txn", UUID.randomUUID()).param("id", accountId).update();
+                """).param("txn", orphan).param("id", accountId).update();
 
-        double breachesBefore = breachesDetected();
+        reconciliation.reconcile();
 
-        reconciliation.reconcileIncrementally();
-
-        assertThat(breachesDetected()).isGreaterThan(breachesBefore);
+        assertThat(gauge("ledger.unbalanced.transactions")).isGreaterThanOrEqualTo(1.0);
+        assertThat(drifts(accountId))
+                .as("the ledger now says 125.00 and the cached balance says 100.00")
+                .isTrue();
     }
 
     @Test
-    @DisplayName("A balance changed with no ledger entry is invisible to the incremental pass and caught by the full sweep")
-    void balanceTamperingNeedsTheFullSweep() {
+    @DisplayName("A balance moved with no ledger entry behind it is caught")
+    void balanceTamperingIsDetected() {
         long accountId = seedFundedAccount("700.00");
-        reconciliation.reconcileIncrementally();
+        assertThat(drifts(accountId)).isFalse();
 
-        // The failure this control exists for: a cached balance moved with
-        // nothing in the ledger behind it. A direct UPDATE, a restore, a bad
-        // migration. No new ledger entry means no new watermark range.
+        // The failure this control exists for: a cached balance moved with nothing in the
+        // ledger behind it. A direct UPDATE, a restore, a bad migration.
         jdbc.sql("UPDATE accounts SET balance = 999.00 WHERE id = :id").param("id", accountId).update();
 
-        double breachesBefore = breachesDetected();
-        reconciliation.reconcileIncrementally();
-        assertThat(breachesDetected())
-                .as("the incremental pass never looks at this account again - no new ledger entry")
-                .isEqualTo(breachesBefore);
+        reconciliation.reconcile();
 
-        reconciliation.reconcileEverything();
-        assertThat(gauge("ledger.drifting.accounts"))
-                .as("the full sweep is why it still gets caught")
-                .isGreaterThanOrEqualTo(1.0);
+        assertThat(gauge("ledger.drifting.accounts")).isGreaterThanOrEqualTo(1.0);
+        assertThat(drifts(accountId))
+                .as("named explicitly, so this cannot pass on another test's leftovers")
+                .isTrue();
 
-        // Leave the fixture consistent for anything that runs after this.
         jdbc.sql("UPDATE accounts SET balance = 700.00 WHERE id = :id").param("id", accountId).update();
-    }
-
-    @Test
-    @DisplayName("Two instances reconciling at once count a breach once, not twice")
-    void watermarkRowIsTheLease() throws Exception {
-        long accountId = seedFundedAccount("100.00");
-        reconciliation.reconcileIncrementally();
-
-        jdbc.sql("""
-                INSERT INTO ledger_entry(transaction_id, account_id, direction, amount, currency, correlation_id)
-                VALUES (:txn, :id, 'CREDIT', 25.00, 'ZAR', 'recon-test-lease')
-                """).param("txn", UUID.randomUUID()).param("id", accountId).update();
-
-        // Every instance runs this schedule. The barrier forces the overlap that would
-        // otherwise be a matter of timing: both threads enter with the same watermark
-        // visible, and only the row lock stops both of them reporting the same breach.
-        double before = breachesDetected();
-        CyclicBarrier startTogether = new CyclicBarrier(2);
-        Runnable pass = () -> {
-            try {
-                startTogether.await();
-                reconciliation.reconcileIncrementally();
-            } catch (Exception e) {
-                throw new IllegalStateException(e);
-            }
-        };
-        Thread a = Thread.ofVirtual().start(pass);
-        Thread b = Thread.ofVirtual().start(pass);
-        a.join();
-        b.join();
-
-        // One orphaned credit is two breaches: the transaction does not balance, and the
-        // account's cached balance no longer matches its net ledger movement. The point of
-        // the assertion is that it is two and not four - the second pass blocks on the
-        // watermark row, then finds an empty window and reports nothing.
-        assertThat(breachesDetected() - before)
-                .as("both instances ran, one did the work")
-                .isEqualTo(2.0);
     }
 }

@@ -116,13 +116,12 @@ app:
   outbox:
     poll-interval-ms: 2000
     batch-size: 20
-    # Ceiling for transient-failure backoff. No attempt limit - see OutboxRelayStore.
+    # Ceiling for transient-failure backoff. No attempt limit - see OutboxRepository.
     backoff-cap-seconds: 300
     purge-published-after-days: 7
 
   reconciliation:
-    interval-ms: 60000
-    initial-delay-ms: 15000
+    cron: "0 30 3 * * *"
 
   retention:
     cron: "0 0 3 * * *"

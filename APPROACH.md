@@ -94,7 +94,7 @@ flowchart TB
 
     R["OutboxRelay<br/><i>every 2s, FOR UPDATE SKIP LOCKED</i>"]
     S(["SNS"])
-    J["ReconciliationJob<br/><i>ledger vs cached balance</i>"]
+    J["ReconciliationJob<br/><i>daily, ledger vs cached balance</i>"]
 
     C --> TX
     TX -->|commit| R --> S
@@ -146,6 +146,7 @@ Zero rows has four causes. `diagnose()` runs only on that path and separates the
 | **Business outcomes excluded from retry** | Insufficient funds is a correct answer, not a failure — and a retry could succeed later after an unrelated deposit | — |
 | **`lock_timeout = 3s`** on every connection | Without it one long transaction backs requests up until the pool drains and callers see connection timeouts instead of a status code | A legitimately slow transaction can be killed |
 | **Double-entry with a `transaction_id`** | Lets any *individual* movement be proven to balance; a global sum wouldn't catch two errors cancelling out | Two rows per withdrawal |
+| **Reconciliation is one daily full sweep** | A cached balance and a ledger are two representations of one fact, so something must prove they agree. Re-deriving everything is fifteen lines with no concurrency semantics to get wrong | An incremental, watermark-bounded pass is the obvious optimisation and is deliberately absent — §6 |
 | **Append-only enforced by triggers** | Application-level immutability is a convention; this is an invariant. Statement-level for TRUNCATE, because row triggers don't fire on it | Corrections need contra entries, not edits |
 | **Failure classified, not counted** | An attempt counter can't tell a malformed message from a broker outage. The previous version dead-lettered everything after ~8.5 minutes of downtime | Publishers must own the taxonomy |
 | **No attempt limit on transient failures** | An undeliverable AML-relevant event is an alert, not a discard | An unbounded backlog needs an operator |
@@ -279,18 +280,30 @@ that is the right trade. Two are worth knowing about:
   and already validates an n-leg transaction correctly — a withdrawal with a fee and VAT is
   four legs. Only `recordWithdrawal` is fixed at a pair.
 
-### What I would cut
+### What I cut, and what I would cut next
 
-If told to make this smaller, in order:
+Two things came out after the review rather than being defended.
 
-1. **The incremental reconciliation pass.** The daily full sweep is fifteen lines, has no
-   watermark and no lease, and is correct. The incremental pass is the trickiest code here
-   and carries the defect in §7.
-2. **The third outbox interface.** Splitting `OutboxAppender` off the rest is real — it is
-   the only part on the money path. Splitting the remainder into relay and operations is
-   textbook rather than situational.
-3. **The mock-based service tests.** `AccountStateRulesIT` covers the same branches against
-   real PostgreSQL.
+**The incremental reconciliation pass.** It was watermark-bounded so its cost tracked
+throughput rather than the age of the ledger — the right idea, and I could not make the
+watermark correct. `MAX(id)` over a `BIGSERIAL` reads the highest id currently *visible*,
+but ids are allocated at insert and published at commit, so a transaction that began
+earlier can commit after the watermark has moved past its ids, and its entries are then
+never examined again. **A sequence id is not a visibility boundary.** Doing it properly
+needs a timestamp with a safety lag, `pg_snapshot_xmin`, or a nullable `reconciled_at`
+column with a partial index — the last being the only one with no correctness parameter to
+tune. Rather than ship a control that quietly checked less than it claimed, I kept the
+daily full sweep: fifteen lines, nothing to get wrong. At the volume where a full sweep
+hurts, the incremental version comes back with a watermark that is a visibility boundary.
+
+**The third outbox interface.** `OutboxAppender` stays separate — it is the only part of
+the outbox on the money path, and that narrowing is real. Splitting the remainder into
+delivery and operations was interface segregation for its own sake: both talk to the same
+table through the same bean, and nothing became unreachable by naming it twice.
+
+Next, if told to make it smaller still: the **retention job**, which answers a named
+dimension but purges tables nothing has filled yet; and the **mock-based service tests**,
+since `AccountStateRulesIT` covers the same branches against real PostgreSQL.
 
 ## 7. Independent review
 
@@ -313,16 +326,13 @@ environment, a requeue-everything operation that was a worse control than the ma
 `UPDATE` it replaced, metrics that were blind to infrastructure failures, and reconciliation
 summing across currencies.
 
-**One finding I have not fixed, on purpose.** The incremental pass takes its watermark from
-`MAX(id)` over `ledger_entry`, but `BIGSERIAL` allocates ids at insert and publishes them at
-commit — and commits land out of allocation order. A withdrawal committing after a
-reconciliation snapshot has already read past its ids is skipped by the incremental pass
-permanently. The daily full sweep still catches it, so exposure is bounded at 24 hours
-rather than unbounded.
+**The finding I answered by deleting code.** The incremental reconciliation pass took its
+watermark from `MAX(id)` over `ledger_entry`. `BIGSERIAL` allocates ids at insert and
+publishes them at commit, so commits land out of allocation order: a withdrawal committing
+after a snapshot had already read past its ids was skipped by that pass permanently.
 
-The real lesson is that **a sequence id is not a visibility watermark**. The fixes are a
-timestamp watermark with a safety lag, `pg_snapshot_xmin(pg_current_snapshot())`, or a
-nullable `reconciled_at` column with a partial index — the last of which is what I'd reach
-for, because it is the only one with no correctness parameter to tune. I left it because
-removing a migration, a lease and a test on the eve of submission is how something breaks
-quietly, and because the pass is first on my list in §6 to be cut entirely.
+I could have patched the watermark. I removed the pass instead, with its migration, its
+lease and its test — the daily full sweep already covers the same invariants in fifteen
+lines with no concurrency semantics to get wrong. §6 has what a correct version would need.
+The review's own verdict was that the sentence explaining why is worth more than the code
+was, and I agree with it.
