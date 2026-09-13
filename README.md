@@ -39,7 +39,7 @@ flowchart LR
         API --> APP --> TXN
     end
 
-    subgraph DB[("PostgreSQL")]
+    subgraph DB["PostgreSQL"]
         direction TB
         ACC["accounts"]
         LED["ledger_entry<br/><i>append-only</i>"]
