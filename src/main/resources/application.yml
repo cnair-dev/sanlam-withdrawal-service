@@ -25,11 +25,18 @@ spring:
       # Bounds how long a request can wait on a contended account row. Without it
       # one long-held transaction backs requests up until the pool drains and
       # callers start seeing connection timeouts instead of a useful status code.
-      # Surfaces as SQLSTATE 55P03 -> CannotAcquireLockException -> 503.
+      # Raises SQLSTATE 55P03. Spring 6.1's SQLExceptionSubclassTranslator has no
+      # mapping for class 55, so that arrives as UncategorizedSQLException and
+      # ApiExceptionHandler matches on the SQLSTATE to return 503 + Retry-After.
       connection-init-sql: "SET lock_timeout = '3s'"
 
   flyway:
     enabled: true
+    # Demo accounts live in db/seed and are loaded only by the local profile. They were in
+    # the main migration path, which meant a production deploy created three customer
+    # accounts with balances - in a service whose premise is that money has a recorded
+    # origin. Theirs did reconcile, which makes it quieter, not better.
+    locations: classpath:db/migration
 
   jackson:
     default-property-inclusion: non_null
@@ -41,6 +48,11 @@ server:
   shutdown: graceful
 
 management:
+  # The operational surface is not the customer API. Binding it to its own port is what
+  # lets the platform expose 8080 and keep 9090 inside the cluster - the requeue operation
+  # in particular must never be reachable from where withdrawals arrive.
+  server:
+    port: ${MANAGEMENT_PORT:9090}
   endpoints:
     web:
       exposure:
@@ -123,3 +135,12 @@ app:
 logging:
   level:
     com.sanlam.banking.withdrawal: INFO
+
+---
+# Local development only: adds the demo accounts to the migration path.
+spring:
+  config:
+    activate:
+      on-profile: local
+  flyway:
+    locations: classpath:db/migration,classpath:db/seed

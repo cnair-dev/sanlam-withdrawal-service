@@ -40,16 +40,14 @@ public class OutboxOperationsEndpoint {
                 "oldestPendingAgeSeconds", outboxOperations.oldestPendingAgeSeconds());
     }
 
-    /** Requeue every dead-lettered event, for recovery after a fixed defect. */
-    @WriteOperation
-    @Transactional
-    public Map<String, Object> requeueAll() {
-        int requeued = outboxOperations.requeueFailed();
-        log.warn("Operator requeued {} dead-lettered outbox event(s)", requeued);
-        return Map.of("requeued", requeued);
-    }
-
-    /** Requeue one event, when only a known message needs replaying. */
+    /**
+     * Requeue one event, by id.
+     *
+     * <p>There was a requeue-everything operation next to this one. It was the wrong
+     * control: a single call that replays the entire dead-letter queue is more dangerous
+     * than the manual UPDATE this endpoint exists to replace, and an operator who needs
+     * all of them can read the ids from the status operation and mean it each time.
+     */
     @WriteOperation
     @Transactional
     public Map<String, Object> requeueOne(@Selector long id) {

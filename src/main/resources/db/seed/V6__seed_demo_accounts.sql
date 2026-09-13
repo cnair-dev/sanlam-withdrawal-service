@@ -1,5 +1,12 @@
 -- Demo data for the local runnable environment.
 --
+-- NOT on the default migration path: spring.flyway.locations only picks db/seed up under
+-- the local profile and in integration tests. It used to be V2 in db/migration, which
+-- meant any deployment created three customer accounts with balances.
+--
+-- Numbered after the schema migrations so it can never apply out of order if an existing
+-- database switches profiles.
+--
 -- Opening balances are recorded AS LEDGER ENTRIES, not just as a balance value.
 -- If an account's balance simply appeared with no corresponding ledger movement,
 -- the reconciliation control could never prove the cached balance and the ledger

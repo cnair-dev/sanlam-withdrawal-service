@@ -5,7 +5,8 @@ import com.sanlam.banking.withdrawal.domain.exception.*;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.ConcurrencyFailureException;
+import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -19,6 +20,7 @@ import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.net.URI;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.stream.Collectors;
 
@@ -91,20 +93,56 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Invalid request", detail, "validation-failed");
     }
 
+    /** PostgreSQL lock_not_available: what the pool's lock_timeout raises. */
+    private static final String LOCK_NOT_AVAILABLE = "55P03";
+
     /**
-     * The lock_timeout set on every pooled connection surfaces here once @Retryable has
-     * exhausted its attempts. The row is contended, not broken, so the caller is told to
-     * come back rather than that the request failed.
+     * A deadlock victim or a serialization failure that survived the retries. Contention,
+     * not breakage, so the caller is told to come back.
      */
-    @ExceptionHandler(CannotAcquireLockException.class)
-    public ResponseEntity<ProblemDetail> handleLockTimeout(CannotAcquireLockException ex) {
-        log.warn("Lock wait exceeded on withdrawal path: {}", ex.getMessage());
-        ProblemDetail problem = build(HttpStatus.SERVICE_UNAVAILABLE, "Account busy",
-                "The account is temporarily locked by another operation. Retry shortly.",
-                "account-busy");
+    @ExceptionHandler(ConcurrencyFailureException.class)
+    public ResponseEntity<ProblemDetail> handleConcurrencyFailure(ConcurrencyFailureException ex) {
+        log.warn("Concurrency failure on withdrawal path: {}", ex.getMessage());
+        return accountBusy();
+    }
+
+    /**
+     * Where the pool's lock_timeout actually lands, and the reason this handler exists
+     * rather than relying on the one above.
+     *
+     * <p>SQLSTATE 55P03 mapped to CannotAcquireLockException under
+     * SQLErrorCodeSQLExceptionTranslator, which was the default until Spring Framework
+     * 6.1 replaced it with SQLExceptionSubclassTranslator. That one derives the exception
+     * from the SQLSTATE class alone, and class 55 has no subclass mapping, so a contended
+     * row now arrives as UncategorizedSQLException - which is not a
+     * TransientDataAccessException, so it fell through to the catch-all and returned 500.
+     * On a money endpoint that is the one status a well-behaved client reads as "outcome
+     * unknown, retry", which is precisely the wrong instruction after a lock timeout.
+     *
+     * <p>Deliberately NOT added to the retry policy. The request has already waited out a
+     * full lock_timeout; retrying it in-process would hold a pool connection for another
+     * one, and under the contention that caused it that is how a slow endpoint becomes an
+     * exhausted pool. The caller backs off instead, which is what Retry-After is for.
+     */
+    @ExceptionHandler(UncategorizedSQLException.class)
+    public ResponseEntity<ProblemDetail> handleUncategorisedSql(UncategorizedSQLException ex) {
+        SQLException cause = ex.getSQLException();
+        if (cause != null && LOCK_NOT_AVAILABLE.equals(cause.getSQLState())) {
+            log.warn("Lock wait exceeded on withdrawal path: {}", cause.getMessage());
+            return accountBusy();
+        }
+        log.error("Unhandled database error", ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal error",
+                        "The request could not be completed.", "internal-error"));
+    }
+
+    private ResponseEntity<ProblemDetail> accountBusy() {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .header(HttpHeaders.RETRY_AFTER, "1")
-                .body(problem);
+                .body(build(HttpStatus.SERVICE_UNAVAILABLE, "Account busy",
+                        "The account is temporarily locked by another operation. Retry shortly.",
+                        "account-busy"));
     }
 
     /**

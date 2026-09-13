@@ -16,9 +16,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.UncategorizedSQLException;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -29,6 +31,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -258,5 +261,33 @@ class WithdrawalApiTest {
         // and it is the serialised form that reaches the ledger, the customer and SNS.
         assertThat(captured.getValue().amount().toPlainString()).isEqualTo(expected);
         assertThat(captured.getValue().amount().scale()).isEqualTo(2);
+    }
+
+    @Test
+    @DisplayName("A contended row is 503 with Retry-After, not 500")
+    void lockTimeoutIsServiceUnavailable() throws Exception {
+        // Exactly what the pool's lock_timeout produces on Spring 6.1: SQLSTATE 55P03 with
+        // no subclass mapping, so UncategorizedSQLException rather than a lock exception.
+        given(withdrawalService.withdraw(any())).willThrow(new UncategorizedSQLException(
+                "withdraw", "UPDATE accounts ...",
+                new SQLException("canceling statement due to lock timeout", "55P03")));
+
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content(BODY)
+                        .header("Idempotency-Key", "lock-1").header("X-Client-Id", "c1"))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(header().string("Retry-After", "1"))
+                .andExpect(jsonPath("$.type").value(org.hamcrest.Matchers.endsWith("account-busy")));
+    }
+
+    @Test
+    @DisplayName("Any other database error is still a 500")
+    void otherSqlErrorsRemainInternal() throws Exception {
+        given(withdrawalService.withdraw(any())).willThrow(new UncategorizedSQLException(
+                "withdraw", "UPDATE accounts ...",
+                new SQLException("something else entirely", "XX000")));
+
+        mvc.perform(post(PATH).contentType(MediaType.APPLICATION_JSON).content(BODY)
+                        .header("Idempotency-Key", "lock-2").header("X-Client-Id", "c1"))
+                .andExpect(status().isInternalServerError());
     }
 }

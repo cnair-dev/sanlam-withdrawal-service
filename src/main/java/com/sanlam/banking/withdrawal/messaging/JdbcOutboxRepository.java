@@ -66,11 +66,17 @@ public class JdbcOutboxRepository
                 UPDATE outbox_event
                    SET attempt_count   = attempt_count + 1,
                        last_error      = :error,
-                       -- LEAST before the cast, not after. POWER returns double
-                       -- precision and ::int overflows above 2^31, so casting
-                       -- first made this throw once attempt_count reached 31.
+                       -- The exponent is capped, not just the result. LEAST evaluates
+                       -- both arguments, so POWER(2, attempt_count) is computed before
+                       -- the cap can clamp it: casting first threw at 2^31, and moving
+                       -- LEAST before the cast only moved the wall to 1024, where POWER
+                       -- overflows double precision itself. Transient failures never
+                       -- terminate, so at a 300s cap 1024 attempts is about three and a
+                       -- half days of sustained outage - which is the exact scenario the
+                       -- no-attempt-limit design exists for. It would have thrown inside
+                       -- handleFailure, aborted the drain, and wedged the relay for good.
                        next_attempt_at = now() + make_interval(
-                             secs => LEAST(POWER(2, attempt_count), :cap)::int)
+                             secs => LEAST(POWER(2, LEAST(attempt_count, 30)), :cap)::int)
                  WHERE id = :id
                 """)
                 .param("error", truncate(error))

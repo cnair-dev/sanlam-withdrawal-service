@@ -40,6 +40,10 @@ public abstract class AbstractPostgresIT {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        // Demo accounts are not on the default migration path. Integration tests want
+        // them: several use 1001 as a fixture and the ledger has a foreign key to it.
+        registry.add("spring.flyway.locations",
+                () -> "classpath:db/migration,classpath:db/seed");
         // Relay and jobs are driven explicitly in tests, not by the scheduler.
         registry.add("app.outbox.poll-interval-ms", () -> "3600000");
         registry.add("app.reconciliation.initial-delay-ms", () -> "3600000");
