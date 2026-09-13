@@ -5,7 +5,7 @@ Submission for the bank account withdrawal code improvement exercise.
 The brief asks for four things: an outline of the approach with the business capability
 preserved, elaboration on implementation choices, the fixed code, and notes on any unclear
 library usage. This document is organised in that order. The code is in this repository;
-`git log` is the narrative — each commit states what was wrong and why the fix is that fix.
+`git log` carries the detail on individual changes.
 
 ---
 
@@ -148,7 +148,7 @@ Zero rows has four causes. `diagnose()` runs only on that path and separates the
 | **Double-entry with a `transaction_id`** | Lets any *individual* movement be proven to balance; a global sum wouldn't catch two errors cancelling out | Two rows per withdrawal |
 | **Reconciliation is one daily full sweep** | A cached balance and a ledger are two representations of one fact, so something must prove they agree. Re-deriving everything is fifteen lines with no concurrency semantics to get wrong | An incremental, watermark-bounded pass is the obvious optimisation and is deliberately absent — §6 |
 | **Append-only enforced by triggers** | Application-level immutability is a convention; this is an invariant. Statement-level for TRUNCATE, because row triggers don't fire on it | Corrections need contra entries, not edits |
-| **Failure classified, not counted** | An attempt counter can't tell a malformed message from a broker outage. The previous version dead-lettered everything after ~8.5 minutes of downtime | Publishers must own the taxonomy |
+| **Failure classified, not counted** | An attempt counter can't tell a malformed message from a broker outage. Ten attempts at a 300s cap is ~8.5 minutes, after which an outage silently discards every pending event | Publishers must own the transport's error taxonomy |
 | **No attempt limit on transient failures** | An undeliverable AML-relevant event is an alert, not a discard | An unbounded backlog needs an operator |
 | **RFC 7807, distinct `type` per account status** | One status code, three different next steps — dormant needs reactivating, frozen needs the hold lifted, closed is terminal | — |
 | **Sealed exceptions, exhaustive switch** | A new subtype breaks the build until someone picks its status code. This fired for real when `CurrencyMismatchException` was added | — |
@@ -198,8 +198,8 @@ The whole service is in this repository. The two pieces worth reading first:
 - **`WithdrawalTransaction.execute`** — the four writes, numbered, in one transaction.
 
 Then `OutboxRelay` for delivery, `ReconciliationJob` for the control, `ApiExceptionHandler`
-for the contract. `git log` reads as the narrative: each commit says what was wrong and why
-the fix is that fix.
+for the contract. [ADR 0001](docs/decisions/0001-no-circuit-breaker-on-the-outbox-relay.md)
+records the one decision where the argument ran both ways.
 
 | Package | Holds |
 |---|---|
@@ -280,59 +280,17 @@ that is the right trade. Two are worth knowing about:
   and already validates an n-leg transaction correctly — a withdrawal with a fee and VAT is
   four legs. Only `recordWithdrawal` is fixed at a pair.
 
-### What I cut, and what I would cut next
+### Scaling the reconciliation
 
-Two things came out after the review rather than being defended.
+The sweep re-derives every position once a day. The obvious optimisation is an incremental
+pass bounded by a watermark, and the trap is which watermark. `MAX(id)` over a `BIGSERIAL`
+reads the highest id currently *visible*, but ids are allocated at insert and published at
+commit, so a transaction that began earlier can commit after the watermark has moved past
+its ids — and its entries are then never examined again. A sequence id is not a visibility
+boundary.
 
-**The incremental reconciliation pass.** It was watermark-bounded so its cost tracked
-throughput rather than the age of the ledger — the right idea, and I could not make the
-watermark correct. `MAX(id)` over a `BIGSERIAL` reads the highest id currently *visible*,
-but ids are allocated at insert and published at commit, so a transaction that began
-earlier can commit after the watermark has moved past its ids, and its entries are then
-never examined again. **A sequence id is not a visibility boundary.** Doing it properly
-needs a timestamp with a safety lag, `pg_snapshot_xmin`, or a nullable `reconciled_at`
-column with a partial index — the last being the only one with no correctness parameter to
-tune. Rather than ship a control that quietly checked less than it claimed, I kept the
-daily full sweep: fifteen lines, nothing to get wrong. At the volume where a full sweep
-hurts, the incremental version comes back with a watermark that is a visibility boundary.
-
-**The third outbox interface.** `OutboxAppender` stays separate — it is the only part of
-the outbox on the money path, and that narrowing is real. Splitting the remainder into
-delivery and operations was interface segregation for its own sake: both talk to the same
-table through the same bean, and nothing became unreachable by naming it twice.
-
-Next, if told to make it smaller still: the **retention job**, which answers a named
-dimension but purges tables nothing has filled yet; and the **mock-based service tests**,
-since `AccountStateRulesIT` covers the same branches against real PostgreSQL.
-
-## 7. Independent review
-
-I had the finished repository reviewed against the brief by a reviewer with no part in
-writing it, and asked it to verify claims rather than accept them. It checked ten technical
-assertions against a live PostgreSQL 16 and mutated five mechanisms to confirm the tests
-caught their removal. All five mutants were killed.
-
-Three assertions were wrong, and all three were in comments rather than code:
-
-| Claim | Reality |
-|---|---|
-| `lock_timeout` returns 503 | It returned **500**. `55P03` mapped to `CannotAcquireLockException` under the old translator; Spring Framework 6.1 replaced the default with one that has no mapping for SQLSTATE class 55, so it arrived as `UncategorizedSQLException` — not transient, so `@Retryable` ignored it and the lock handler never ran. The comment described Boot 2 behaviour on a Boot 3.3 stack. Fixed, and now tested. |
-| `DO UPDATE` takes a row lock where `DO NOTHING` does not | Both block, on the speculative-insertion token: 2.16s against 2.19s, measured. The conclusion was right and the reason was invented. What `DO UPDATE` actually buys is the TTL re-claim. |
-| The backoff cap fixed the overflow | It moved it. `LEAST` evaluates both arguments, so `POWER(2, n)` overflows double precision at n=1024 before the cap can clamp it — about three and a half days of sustained outage, which is exactly the scenario the no-attempt-limit design exists to survive. The exponent is capped now, not just the result. |
-
-Also acted on: unvalidated configuration (`idempotency-ttl-hours: 0` silently disables
-idempotency), the demo seed sitting on the default migration path so it would run in any
-environment, a requeue-everything operation that was a worse control than the manual
-`UPDATE` it replaced, metrics that were blind to infrastructure failures, and reconciliation
-summing across currencies.
-
-**The finding I answered by deleting code.** The incremental reconciliation pass took its
-watermark from `MAX(id)` over `ledger_entry`. `BIGSERIAL` allocates ids at insert and
-publishes them at commit, so commits land out of allocation order: a withdrawal committing
-after a snapshot had already read past its ids was skipped by that pass permanently.
-
-I could have patched the watermark. I removed the pass instead, with its migration, its
-lease and its test — the daily full sweep already covers the same invariants in fifteen
-lines with no concurrency semantics to get wrong. §6 has what a correct version would need.
-The review's own verdict was that the sentence explaining why is worth more than the code
-was, and I agree with it.
+A correct version needs a timestamp watermark with a safety lag, `pg_snapshot_xmin`, or a
+nullable `reconciled_at` column with a partial index. The last is what I would use: it is
+the only one with no correctness parameter to tune. Until the ledger is large enough for a
+full sweep to hurt, the incremental version is a harder control that checks strictly less,
+so the daily sweep is what is here.

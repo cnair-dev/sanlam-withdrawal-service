@@ -22,11 +22,11 @@ Two distinct failure modes have to be survived:
 | **B** | Poison message — oversized or malformed payload | Narrow. Affects *one* row. Never self-resolves. |
 | **C** | Misconfiguration — wrong topic ARN, expired credentials | **Broad. Affects every row. Never self-resolves.** |
 
-An earlier version of this document had only A and B, and filed a wrong topic
-ARN under B as "narrow, affects one row". That was wrong: the topic ARN is
-global configuration, so a typo fails every event. C is the quadrant that
-breaks an attempt-counting design, because the mechanism that is supposed to
-isolate one bad message instead discards the entire stream.
+C is easy to miss, and it is the quadrant that matters most. A wrong topic ARN
+looks like a poison message - one call, one rejection - but the ARN is global
+configuration, so the typo fails *every* event. Filed under B it would be
+dead-lettered as "one bad row" until the entire stream had been discarded. It
+is the case that breaks an attempt-counting design.
 
 Any resilience mechanism chosen here has to be assessed against all three.
 

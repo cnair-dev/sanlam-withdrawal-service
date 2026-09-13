@@ -15,8 +15,7 @@ The brief asks for four things. They are all there, in that order:
 | The fixed code | [§4](APPROACH.md), and this repository |
 | Any unclear library usage documented | [§5](APPROACH.md) — the original's, and the rewrite's |
 
-It also covers what I deliberately did **not** build and why ([§6](APPROACH.md)), and what
-an independent review found ([§7](APPROACH.md)).
+It also covers what I deliberately did **not** build, and why ([§6](APPROACH.md)).
 
 This file is the repository: how to run it, how to check the claims, where things live.
 

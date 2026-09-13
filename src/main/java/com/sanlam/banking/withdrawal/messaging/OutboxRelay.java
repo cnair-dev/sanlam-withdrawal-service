@@ -35,11 +35,11 @@ import java.util.List;
  * problem again, one step downstream. The event id is the transaction id minted inside the
  * withdrawal, so it is stable across republishes.
  *
- * <p>Failures are handled by what they are rather than by how often they have happened; an
- * earlier version counted attempts, so an SNS outage over about eight and a half minutes
- * quietly dead-lettered everything pending. A circuit breaker was considered and left out -
- * backoff already suppresses doomed calls, and classification is the better answer to
- * poison messages. See docs/decisions/0001.
+ * <p>Failures are handled by what they are rather than by how often they have happened.
+ * Counting attempts instead puts a ceiling on survivable downtime - ten attempts at a 300s
+ * cap is about eight and a half minutes, after which an outage discards every pending
+ * event. A circuit breaker is deliberately absent: backoff already suppresses doomed calls,
+ * and classification is the better answer to poison messages. See docs/decisions/0001.
  */
 @Component
 @Slf4j

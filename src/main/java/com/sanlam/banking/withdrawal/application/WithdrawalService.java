@@ -80,8 +80,8 @@ public class WithdrawalService {
             throw e;
         } catch (RuntimeException e) {
             // Everything that is not a business outcome: a lock timeout, a dead connection,
-            // a bug. These used to pass through uncounted, so withdrawal.attempts described
-            // successes and refusals and was silent about the failures you would page on.
+            // a bug. Counted here so the outcome distribution covers the failures worth
+            // paging on, rather than describing only successes and refusals.
             metrics.recordAttempt("infrastructure_failure");
             throw e;
         } finally {
