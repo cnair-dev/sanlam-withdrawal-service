@@ -1,0 +1,5 @@
+BEGIN
+SET
+ERROR:  canceling statement due to lock timeout
+CONTEXT:  while updating tuple (0,15) in relation "accounts"
+ROLLBACK

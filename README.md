@@ -5,7 +5,7 @@ unchanged — debit an account if it can cover the amount, then emit a withdrawa
 event — but it is now correct under concurrency, atomic with its event, auditable,
 and observable.
 
-Runs locally: `docker compose up -d && ./mvnw spring-boot:run`.
+Runs locally: `docker compose up -d`, then the two commands in §8.
 
 ---
 
@@ -42,7 +42,7 @@ of one mechanism instead of three.
 
 ```
 POST /v1/bank/withdraw
-   └── claim idempotency key        (ON CONFLICT DO NOTHING — fails fast, before money moves)
+   └── claim idempotency key        (ON CONFLICT DO UPDATE — fails fast, before money moves)
    └── atomic conditional debit     (one statement: status + funds + write, RETURNING new balance)
    └── double-entry ledger          (DEBIT customer / CREDIT settlement, same transaction_id)
    └── outbox row                   (the event, as data)
@@ -59,7 +59,9 @@ UPDATE accounts
    SET balance = balance - :amount
  WHERE id = :accountId
    AND status = 'ACTIVE'
-   AND balance - :amount >= -overdraft_limit
+   AND is_system = FALSE
+   AND currency = :currency
+   AND balance >= :amount
 RETURNING balance
 ```
 
@@ -99,20 +101,30 @@ same rows and publish every event twice — verified, both workers claimed ids
 1,2,3. With it they claim disjoint batches. The trade-off is strict global
 ordering, which is not required here.
 
-Failures back off exponentially per row and land in a terminal `FAILED` state
-after 10 attempts, which is the dead-letter path. Delivery is at-least-once;
-consumers must be idempotent.
+Failures are handled by what they are, not by how often they have happened. A
+message the transport rejects on its own merits is dead-lettered immediately —
+retrying it only delays everything behind it. A transport failure backs the row
+off and leaves it `PENDING` with **no attempt limit**, because an event that
+cannot currently be delivered is an operational problem to raise, not one to
+discard. An earlier version counted attempts, which meant an outage lasting more
+than about eight and a half minutes silently dead-lettered every pending event;
+[ADR 0001](docs/decisions/0001-no-circuit-breaker-on-the-outbox-relay.md) §5 has
+the arithmetic. Delivery is at-least-once; consumers must be idempotent.
 
 ### Idempotency
 
 `Idempotency-Key` is **required** — for an operation that moves money, optional
 idempotency guarantees that some caller eventually double-debits on a timeout.
 
-The key is claimed *before* the debit, via `ON CONFLICT DO NOTHING` rather than
-by catching a duplicate-key exception, because in PostgreSQL **any error aborts
-the surrounding transaction** — a caught violation leaves it unusable without a
-`SAVEPOINT`. Verified: the losing session blocks at the insert, then receives
-zero rows with no error raised.
+The key is claimed *before* the debit, via `ON CONFLICT ... DO UPDATE` rather
+than by catching a duplicate-key exception, because in PostgreSQL **any error
+aborts the surrounding transaction** — a caught violation leaves it unusable
+without a `SAVEPOINT`. `DO UPDATE ... WHERE expires_at < now()` is what enforces
+the TTL: expiry is a property of the row, so it has to be evaluated when the row
+is claimed. Verified: the losing session blocks at the insert, then receives zero
+rows with no error raised. Note that `DO NOTHING` blocks too — both wait on the
+same speculative-insertion token, 2.16s against 2.19s in `verify_db_claims.sh`
+E5 — so blocking is not what `DO UPDATE` buys. The TTL re-claim is.
 
 Keys are scoped per client and bound to a `request_hash`. Reusing a key with
 different parameters returns **422** rather than silently replaying the old
@@ -139,7 +151,7 @@ ledger.
 
 ## 3. Verified behaviour
 
-Not asserted — executed. `./mvnw verify` runs 11 tests (5 unit, 6 integration
+Not asserted — executed. `./mvnw verify` runs 60 tests (31 unit, 29 integration
 against real PostgreSQL via Testcontainers, not H2, because H2 does not
 reproduce the row-locking semantics the design depends on).
 
@@ -151,11 +163,13 @@ reproduce the row-locking semantics the design depends on).
 | Ledger vs cached balance | Agree for every account |
 | Every ledger transaction balances | 0 unbalanced |
 | Two relay workers | Disjoint batches (`SKIP LOCKED`) |
-| Publish failure | Backs off, stays PENDING, dead-letters after max attempts |
+| Transient publish failure | Backs off, stays PENDING, never dead-letters (asserted over 41 attempts) |
+| Rejected message | Dead-lettered on the first occurrence |
+| Contended row past `lock_timeout` | 503 + `Retry-After`, not 500 |
 
 End-to-end against Postgres + LocalStack: 200 success, 200 idempotent replay
-(no second debit), 422 key-conflict, 422 insufficient funds, 200 within arranged
-overdraft, 409 frozen, 404 unknown, 400 sub-cent, 400 missing key — with both
+(no second debit), 422 key-conflict, 422 insufficient funds, 409 frozen,
+409 currency mismatch, 404 unknown, 400 sub-cent, 400 missing key — with both
 events delivered to a subscribed SQS queue carrying the correlation id.
 
 ---
@@ -235,9 +249,10 @@ Named because scope decisions are decisions.
 
 ## 7. Data governance
 
-Event payloads carry a surrogate account id and amount only — no names, national
-identity numbers or full account numbers cross the service boundary (POPIA
-minimisation). Published outbox rows are purged after 7 days and idempotency keys
+Event payloads carry a surrogate account id, the amount and the resulting balance
+— no names, national identity numbers or full account numbers cross the service
+boundary. POPIA minimisation is about necessity, not about carrying as little as
+possible: the balance is what the notification and statement consumers need. Published outbox rows are purged after 7 days and idempotency keys
 expire after 24 hours; both would otherwise grow without bound, which is a cost
 and a governance problem. The ledger is explicitly **not** purged — financial
 records carry a statutory retention obligation (FICA: seven years) and are
@@ -252,8 +267,12 @@ monitoring, fraud scoring, customer notification and statement generation.
 
 ```bash
 docker compose up -d          # Postgres + LocalStack (SNS topic and SQS subscriber auto-provisioned)
-./mvnw spring-boot:run        # requires JDK 21
-./mvnw verify                 # 11 tests, incl. Testcontainers concurrency proof
+
+# The local profile adds the demo accounts (db/seed) and points SNS at LocalStack.
+# Without it Flyway applies the schema only, and the SDK resolves the real AWS endpoint.
+AWS_ENDPOINT_OVERRIDE=http://localhost:4566 \
+  ./mvnw spring-boot:run -Dspring-boot.run.profiles=local   # requires JDK 21
+./mvnw verify                 # 60 tests, incl. Testcontainers concurrency proof
 ```
 
 ```bash
@@ -267,8 +286,9 @@ curl -X POST http://localhost:8080/v1/bank/withdraw \
 Repeat the identical call: the original response is replayed and the balance does
 not move again.
 
-Seeded accounts — **1001** 1000.00 active · **1002** 250.00 with a 500.00 arranged
-overdraft · **1003** 750.00 frozen · **9000** system settlement (ledger-only).
+Seeded accounts (local profile only — `db/seed`, not on the default migration
+path) — **1001** 1000.00 active · **1002** 250.00 active · **1003** 750.00 frozen
+· **9000** system settlement, ledger-only and closed to the customer API.
 
 OpenAPI at `/swagger-ui.html`, metrics at `/actuator/prometheus`, health at
 `/actuator/health`.

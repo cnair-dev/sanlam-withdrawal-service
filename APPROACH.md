@@ -31,7 +31,8 @@ I would rather be asked why something is missing than explain machinery I could 
 
 ### Scope
 
-The estimate was 1.5–2.5 hours. The commit history spans 2h12m, and the shape of the
+The estimate was 1.5–2.5 hours. The code commits span 2h12m and the write-up followed
+the next day. The shape of the
 solution reflects that budget being spent on depth in one place rather than breadth
 everywhere: the concurrency and delivery guarantees are worked through properly and
 verified against a real database, while whole categories the brief puts out of scope
@@ -75,9 +76,6 @@ emitted. The first thing the rewrite does is make the stated capability actually
 ---
 
 ## 3. Implementation choices
-
-<!-- SPINE: each entry = decision, why, what it cost, what I'd have done instead.
-     Pull the detail from defence_map.md Part 2. Order by what an interviewer asks first. -->
 
 ### The core fix: one statement, not three
 
@@ -129,18 +127,12 @@ why the outbox health indicator is out of the liveness group]_
 
 ## 4. The fixed code
 
-<!-- SPINE: inline the two pieces someone should be able to read without cloning:
-     the controller, and the conditional UPDATE. Everything else by reference. -->
-
 _[controller + JdbcAccountRepository.debitIfPermitted inline, with a short map of the
 package layout and where to look for what]_
 
 ---
 
 ## 5. Library usage notes
-
-<!-- SPINE: the brief asks to "document any unclear library usage" — both what was unclear
-     in the original, and anything in the rewrite a reviewer would not assume. -->
 
 ### In the original
 
@@ -162,9 +154,6 @@ logstash-logback-encoder; springdoc; Micrometer]_
 
 ## 6. What I did not build, and why
 
-<!-- SPINE: this section is the judgment one. Two classes: out of scope per the brief,
-     and in scope but deliberately deferred. Pull from defence_map.md gaps + Part 3. -->
-
 ### Out of scope per the brief
 
 - **Security.** No authentication or authorisation. `X-Client-Id` is self-asserted and
@@ -185,8 +174,5 @@ set worth naming]_
 ---
 
 ## 7. Cold review findings
-
-<!-- SPINE: stub. Anything the independent review surfaces that I agree with and acted on,
-     plus anything I considered and deliberately did not change, with the reason. -->
 
 _[pending]_

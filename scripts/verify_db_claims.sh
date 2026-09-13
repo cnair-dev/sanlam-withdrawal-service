@@ -76,20 +76,55 @@ echo "  INSERT 55.1234 into NUMERIC(19,2) CHECK (scale(bal) <= 2):"
 $P -c "INSERT INTO scale_demo VALUES (55.1234);" | sed 's/^/    /'
 $P -A -t -c "SELECT '    stored as '||bal||' at scale '||scale(bal)||' - the constraint never fires' FROM scale_demo;"
 
-banner "E5  IDEMPOTENCY: ON CONFLICT DO NOTHING, no transaction abort"
-$P -q -c "DELETE FROM idempotency_key;"
-( $P <<'X'
-BEGIN; INSERT INTO idempotency_key VALUES('k','A') ON CONFLICT DO NOTHING; SELECT pg_sleep(2); COMMIT;
+banner "E5  IDEMPOTENCY: the production statement - TTL re-claim, and who blocks"
+$P -q -c "DROP TABLE IF EXISTS idempotency_key;
+          CREATE TABLE idempotency_key(client_id TEXT, idempotency_key TEXT, request_hash TEXT,
+                 response_body TEXT, expires_at TIMESTAMPTZ NOT NULL,
+                 PRIMARY KEY(client_id, idempotency_key));"
+
+# The statement the service actually runs. DO NOTHING cannot express the TTL re-claim,
+# which is the reason for DO UPDATE - NOT, as an earlier version of this script and the
+# repository comment both claimed, that DO NOTHING fails to block. Measured below.
+CLAIM="INSERT INTO idempotency_key(client_id, idempotency_key, request_hash, expires_at)
+       VALUES ('c','k','hash-%s', now() + make_interval(hours => %s))
+       ON CONFLICT (client_id, idempotency_key) DO UPDATE
+          SET request_hash = EXCLUDED.request_hash, expires_at = EXCLUDED.expires_at,
+              response_body = NULL
+        WHERE idempotency_key.expires_at < now()"
+
+echo "-- a live key is NOT re-claimed, and the winner's stored response survives:"
+$P -q -c "$(printf "$CLAIM" A 1);"
+$P -q -c "UPDATE idempotency_key SET response_body='winner-response';"
+$P -c "$(printf "$CLAIM" B 1);"
+$P -q -c "SELECT request_hash, response_body FROM idempotency_key;"
+
+echo "-- an EXPIRED key IS re-claimed, and the stale response is cleared:"
+$P -q -c "UPDATE idempotency_key SET expires_at = now() - interval '1 second';"
+$P -c "$(printf "$CLAIM" C 1);"
+$P -q -c "SELECT request_hash, response_body FROM idempotency_key;"
+
+echo "-- under concurrency BOTH forms block on the speculative-insertion token."
+echo "   The loser waits for the winner to commit, then sees a live key. DO UPDATE is"
+echo "   not what makes it block - that was a wrong claim, measured here:"
+for MODE in "DO NOTHING" "DO UPDATE SET request_hash=EXCLUDED.request_hash WHERE idempotency_key.expires_at < now()"; do
+  $P -q -c "DELETE FROM idempotency_key;"
+  ( $P -q <<X
+BEGIN; INSERT INTO idempotency_key(client_id,idempotency_key,request_hash,expires_at)
+ VALUES('c','k','A', now()+interval '1 hour') ON CONFLICT (client_id,idempotency_key) $MODE;
+SELECT pg_sleep(2.5); COMMIT;
 X
-) >a.log 2>&1 &
-sleep 0.4
-( $P <<'X'
-BEGIN; INSERT INTO idempotency_key VALUES('k','B') ON CONFLICT DO NOTHING; COMMIT;
+  ) >/dev/null 2>&1 &
+  sleep 0.4
+  START=$(date +%s)
+  ( $P <<X
+BEGIN; INSERT INTO idempotency_key(client_id,idempotency_key,request_hash,expires_at)
+ VALUES('c','k','B', now()+interval '1 hour') ON CONFLICT (client_id,idempotency_key) $MODE; COMMIT;
 X
-) >b.log 2>&1 &
-wait
-echo "A: $(grep -E '^INSERT' a.log)   B: $(grep -E '^INSERT' b.log)  <- 0 rows = replay"
-echo "errors in B: $(grep -c ERROR b.log)  (0 = tx NOT aborted, unlike catching a PK violation)"
+  ) >b.log 2>&1
+  END=$(date +%s)
+  wait
+  echo "   $(printf '%-22s' "${MODE%% *} ${MODE#* }" | cut -c1-22) waited ~$((END-START))s, errors: $(grep -c ERROR b.log), winner kept: $($P -A -t -c 'SELECT request_hash FROM idempotency_key')"
+done
 
 banner "E6  OUTBOX: what SKIP LOCKED actually buys"
 # The relay marks rows PUBLISHED in the same transaction that claims them, so
