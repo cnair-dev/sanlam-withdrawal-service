@@ -10,12 +10,12 @@ The brief asks for four things. They are all there, in that order:
 
 | Asked for | Where |
 |---|---|
-| An outline of the approach, business capability unchanged | [§1](APPROACH.md) — including what the original *actually* does, which is not quite what it looks like |
-| Elaboration on implementation choices | [§3](APPROACH.md) |
-| The fixed code | [§4](APPROACH.md), and this repository |
-| Any unclear library usage documented | [§5](APPROACH.md) — the original's, and the rewrite's |
+| An outline of the approach, business capability unchanged | [§1](APPROACH.md#1-approach) — including what the original *actually* does, which is not quite what it looks like |
+| Elaboration on implementation choices | [§3](APPROACH.md#3-implementation-choices) |
+| The fixed code | [§4](APPROACH.md#4-the-fixed-code), and this repository |
+| Any unclear library usage documented | [§5](APPROACH.md#5-library-usage-notes) — the original's, and the rewrite's |
 
-It also covers what I deliberately did **not** build, and why ([§6](APPROACH.md)).
+It also covers what I deliberately did **not** build, and why ([§6](APPROACH.md#6-what-i-did-not-build-and-why)).
 
 This file is the repository: how to run it, how to check the claims, where things live.
 
@@ -147,4 +147,4 @@ one decision that was contested.
 Security is out of scope per the brief — there is no authentication, and `X-Client-Id` is
 self-asserted. Also absent, deliberately: reversals, available-versus-ledger balance and
 holds, value dating, limits and velocity checks, a customer entity, and multi-currency
-support. [APPROACH.md §6](APPROACH.md) says why for each, and which one I would close first.
+support. [APPROACH.md §6](APPROACH.md#6-what-i-did-not-build-and-why) says why for each, and which one I would close first.

@@ -26,17 +26,15 @@ names. I worked in this order, which is also my order of priority:
 4. **Then operability** — status codes a caller can branch on, logs that can be correlated,
    metrics with a latency distribution rather than an average.
 
-I stopped at the boundary of what this service can own. What I did not build is in §6, and
+I stopped at the boundary of what this service can own. What I did not build is in [§6](#6-what-i-did-not-build-and-why), and
 I would rather be asked why something is missing than explain machinery I could not justify.
 
 ### Scope
 
-The estimate was 1.5–2.5 hours. The code commits span 2h12m and the write-up followed
-the next day. The shape of the
-solution reflects that budget being spent on depth in one place rather than breadth
-everywhere: the concurrency and delivery guarantees are worked through properly and
-verified against a real database, while whole categories the brief puts out of scope
-— security in particular — are untouched and flagged rather than half-built.
+The estimate was 1.5–2.5 hours, and the shape of this reflects spending it on depth in one
+place rather than breadth everywhere. The concurrency and delivery guarantees are worked
+through properly and verified against a real database; whole categories the brief puts out
+of scope — security in particular — are untouched and named rather than half-built.
 
 Two deliberate departures from the brief's "out of scope" list, both because the thing
 being tested cannot be demonstrated any other way:
@@ -146,7 +144,7 @@ Zero rows has four causes. `diagnose()` runs only on that path and separates the
 | **Business outcomes excluded from retry** | Insufficient funds is a correct answer, not a failure — and a retry could succeed later after an unrelated deposit | — |
 | **`lock_timeout = 3s`** on every connection | Without it one long transaction backs requests up until the pool drains and callers see connection timeouts instead of a status code | A legitimately slow transaction can be killed |
 | **Double-entry with a `transaction_id`** | Lets any *individual* movement be proven to balance; a global sum wouldn't catch two errors cancelling out | Two rows per withdrawal |
-| **Reconciliation is one daily full sweep** | A cached balance and a ledger are two representations of one fact, so something must prove they agree. Re-deriving everything is fifteen lines with no concurrency semantics to get wrong | An incremental, watermark-bounded pass is the obvious optimisation and is deliberately absent — §6 |
+| **Reconciliation is one daily full sweep** | A cached balance and a ledger are two representations of one fact, so something must prove they agree. Re-deriving everything is one query per invariant, with no watermark, no lease and no concurrency semantics to get wrong | An incremental, watermark-bounded pass is the obvious optimisation and is deliberately absent — [§6](#6-what-i-did-not-build-and-why) |
 | **Append-only enforced by triggers** | Application-level immutability is a convention; this is an invariant. Statement-level for TRUNCATE, because row triggers don't fire on it | Corrections need contra entries, not edits |
 | **Failure classified, not counted** | An attempt counter can't tell a malformed message from a broker outage. Ten attempts at a 300s cap is ~8.5 minutes, after which an outage silently discards every pending event | Publishers must own the transport's error taxonomy |
 | **No attempt limit on transient failures** | An undeliverable AML-relevant event is an alert, not a discard | An unbounded backlog needs an operator |
@@ -293,4 +291,4 @@ A correct version needs a timestamp watermark with a safety lag, `pg_snapshot_xm
 nullable `reconciled_at` column with a partial index. The last is what I would use: it is
 the only one with no correctness parameter to tune. Until the ledger is large enough for a
 full sweep to hurt, the incremental version is a harder control that checks strictly less,
-so the daily sweep is what is here.
+so the full sweep is what is here.
