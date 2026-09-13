@@ -77,60 +77,138 @@ emitted. The first thing the rewrite does is make the stated capability actually
 
 ## 3. Implementation choices
 
-### The core fix: one statement, not three
+Everything below is one transaction or deliberately outside it. That line is the design:
 
-_[decision, the EvalPlanQual explanation, why READ COMMITTED is required rather than merely
-sufficient, why not optimistic locking or SELECT FOR UPDATE]_
+```mermaid
+flowchart TB
+    C["POST /v1/bank/withdraw<br/>Idempotency-Key required"]
 
-### Atomicity across the four writes
+    subgraph TX["ONE database transaction — all four commit or none do"]
+        direction TB
+        K["1 · Claim idempotency key<br/><i>before money moves</i>"]
+        D["2 · Conditional debit<br/><i>balance, status, currency in the WHERE</i>"]
+        L["3 · Ledger pair<br/><i>customer debit + settlement credit</i>"]
+        O["4 · Outbox row<br/><i>the event, as data</i>"]
+        K --> D --> L --> O
+    end
 
-_[balance, ledger, outbox, idempotency in one transaction; why that single property solves
-the dual-write problem, the audit trail and idempotency safety at once]_
+    R["OutboxRelay<br/><i>every 2s, FOR UPDATE SKIP LOCKED</i>"]
+    S(["SNS"])
+    J["ReconciliationJob<br/><i>ledger vs cached balance</i>"]
 
-### Delivery: the transactional outbox
+    C --> TX
+    TX -->|commit| R --> S
+    TX -.->|reads| J
 
-_[why an outbox rather than publish-after-commit; at-least-once and what that asks of
-consumers; the batch window and why closing it needs a distributed transaction]_
+    classDef tx fill:#e8f0fe,stroke:#3b6fd4,stroke-width:2px
+    class TX tx
+```
 
-### Idempotency
+The original published to SNS as a second, independent write after the balance update.
+Die between them and the money moved with no event; publish then roll back and an event
+exists for money that never moved. Writing the event as a row **inside** the transaction
+removes that window by construction. The relay turns rows into messages afterwards, which
+makes delivery at-least-once — consumers must be idempotent, as they must be under any
+real broker.
 
-_[required header not optional; ON CONFLICT rather than catching a duplicate key; TTL
-enforced at claim time; request hash binding; why retry and idempotency are different
-concerns]_
+### The core fix
 
-### The ledger and the control that makes it mean something
+```sql
+UPDATE accounts
+   SET balance = balance - :amount
+ WHERE id = :accountId
+   AND is_system = FALSE
+   AND status = 'ACTIVE'
+   AND currency = :currency
+   AND balance >= :amount
+RETURNING balance
+```
 
-_[double-entry with a transaction_id grouping key; append-only enforced in the schema;
-two-pass reconciliation and why the full sweep is not redundant]_
+The check and the write are one statement, so the row lock and the predicate are the same
+operation. A blocked second caller re-reads the committed row and re-evaluates this `WHERE`
+against it — it either still qualifies or matches zero rows.
+
+That behaviour **requires** READ COMMITTED, which is why it's pinned at the pool rather than
+assumed. REPEATABLE READ and above can't re-read without breaking their own snapshot, so
+they raise a serialization failure instead, turning an ordinary insufficient-funds result
+into an error the application has to retry.
+
+Zero rows has four causes. `diagnose()` runs only on that path and separates them.
+
+### The rest, in brief
+
+| Decision | Why | Cost / alternative |
+|---|---|---|
+| **Idempotency key required, not optional** | Optional idempotency on a money endpoint guarantees someone double-debits on a timeout retry | A caller must generate one |
+| **`ON CONFLICT ... DO UPDATE`**, not catching a duplicate key | In PostgreSQL any error aborts the transaction — a caught violation leaves it unusable for the replay read that follows | `DO NOTHING` is simpler but can't express the TTL re-claim |
+| **TTL enforced at claim time** | Expiry is a property of the row, so it must be evaluated when the row is claimed. Leaving it to the nightly purge kept keys effective up to 24h past expiry | — |
+| **Retry boundary outside the transaction** | Spring marks a transaction rollback-only on first exception, so retrying inside it can never succeed | One extra bean; a self-invocation would silently bypass the proxy |
+| **Business outcomes excluded from retry** | Insufficient funds is a correct answer, not a failure — and a retry could succeed later after an unrelated deposit | — |
+| **`lock_timeout = 3s`** on every connection | Without it one long transaction backs requests up until the pool drains and callers see connection timeouts instead of a status code | A legitimately slow transaction can be killed |
+| **Double-entry with a `transaction_id`** | Lets any *individual* movement be proven to balance; a global sum wouldn't catch two errors cancelling out | Two rows per withdrawal |
+| **Append-only enforced by triggers** | Application-level immutability is a convention; this is an invariant. Statement-level for TRUNCATE, because row triggers don't fire on it | Corrections need contra entries, not edits |
+| **Failure classified, not counted** | An attempt counter can't tell a malformed message from a broker outage. The previous version dead-lettered everything after ~8.5 minutes of downtime | Publishers must own the taxonomy |
+| **No attempt limit on transient failures** | An undeliverable AML-relevant event is an alert, not a discard | An unbounded backlog needs an operator |
+| **RFC 7807, distinct `type` per account status** | One status code, three different next steps — dormant needs reactivating, frozen needs the hold lifted, closed is terminal | — |
+| **Sealed exceptions, exhaustive switch** | A new subtype breaks the build until someone picks its status code. This fired for real when `CurrencyMismatchException` was added | — |
+| **`NUMERIC(19,2)` + `@Digits` at the boundary** | See below | — |
 
 ### Money
 
-_[NUMERIC(19,2); the sub-cent phantom success and why the database-side guard cannot fire;
-normalising to the minor unit; that this service never rounds customer money]_
+The amount constraints are the only thing between a sub-cent request and a phantom
+success. Withdraw `0.005` from `100.00` and PostgreSQL rounds on assignment: one row
+updated, balance unchanged, and a success response, a ledger pair and an event for money
+that never moved.
 
-### Failure handling
+The obvious database guard doesn't work — `CHECK (scale(balance) <= 2)` can't fire, because
+the column coerces the value *before* the constraint is evaluated. I verified that and
+removed both such constraints rather than leave a check that can't run.
 
-_[classification rather than attempt counting; why config errors are transient; no terminal
-state for transient failures; the no-circuit-breaker decision → ADR 0001]_
+Scale is also not cosmetic: `10.00` stripped of trailing zeros is `1E+1`, and Jackson
+writes `BigDecimal` with `toString()`. Amounts are normalised to the minor unit so the
+service works in `10.00` throughout. Two decimals is ZAR's minor unit — not a universal
+banking scale — and it's the same single-currency assumption the debit predicate enforces.
 
-### API contract
+**This service never rounds customer money.** Sub-cent is rejected at the boundary, so the
+database never sees a value needing coercion. Rounding only becomes a question with
+interest or FX, and then it's a rule the business specifies.
 
-_[RFC 7807; sealed hierarchy and the exhaustive switch; /v1; why extending
-ResponseEntityExceptionHandler is load-bearing]_
+### Errors and observability
 
-### Observability
+A contended row returns **503 with `Retry-After`**, not 500 — on a money endpoint, 500 is
+the status that tells a client the outcome is unknown and it should retry, which is the
+opposite of what you want after a lock timeout. Getting this right needed the actual
+SQLSTATE: Spring 6.1 replaced the default exception translator, so `55P03` now arrives as
+`UncategorizedSQLException` rather than a lock exception. It is deliberately *not* retried
+— the request already waited out a full `lock_timeout`, and retrying in-process is how a
+slow endpoint becomes an exhausted pool.
 
-_[correlation id across the async boundary; histograms not averages; backlog age not depth;
-why the outbox health indicator is out of the liveness group]_
-
----
+Correlation ids travel on the outbox row, so publish-side logs are attributable to the
+request that caused them. Latency is published as a histogram, not an average, because an
+average on a payment endpoint hides the tail that matters. The backlog metric is **oldest
+pending age**, not depth — depth tells you how much is queued, age tells you whether the
+relay is keeping up.
 
 ## 4. The fixed code
 
-_[controller + JdbcAccountRepository.debitIfPermitted inline, with a short map of the
-package layout and where to look for what]_
+The whole service is in this repository. The two pieces worth reading first:
 
----
+- **`JdbcAccountRepository.debitIfPermitted`** — the statement above; the correctness fix.
+- **`WithdrawalTransaction.execute`** — the four writes, numbered, in one transaction.
+
+Then `OutboxRelay` for delivery, `ReconciliationJob` for the control, `ApiExceptionHandler`
+for the contract. `git log` reads as the narrative: each commit says what was wrong and why
+the fix is that fix.
+
+| Package | Holds |
+|---|---|
+| `api` | Controller, DTOs, the RFC 7807 handler |
+| `application` | Orchestration and the retry boundary; the transactional unit of work |
+| `domain` | Commands, diagnostics, the sealed exception hierarchy |
+| `persistence` | Account, ledger and idempotency repositories |
+| `messaging` | Outbox (append / relay / operations), SNS publisher, event envelope |
+| `job` | Reconciliation and retention |
+| `observability` | Metrics, health, the operator endpoint |
 
 ## 5. Library usage notes
 
@@ -146,9 +224,16 @@ package layout and where to look for what]_
 
 ### In the rewrite
 
-_[JdbcClient vs JdbcTemplate and why; Spring Retry is a separate dependency not Spring
-core; Lombok scope and what it is deliberately not used for; Testcontainers/LocalStack;
-logstash-logback-encoder; springdoc; Micrometer]_
+| Library | Note |
+|---|---|
+| **`JdbcClient`** | Spring 6.1's fluent wrapper over `JdbcTemplate`, not a new dependency. Chosen over JPA because money movement is SQL I want to read — the core statement's correctness depends on it being one statement, which is not something to leave to a dialect. |
+| **Spring Retry** | A separate dependency, not Spring core. `@Retryable` needs `@EnableRetry` and works by proxy, which is why the retried method lives on a different bean from the transactional one. |
+| **Lombok** | Scoped to `@RequiredArgsConstructor` and `@Slf4j` on plain classes. Not used on records, which generate their own accessors, constructor and equality, and not for `@Data` or `@Builder`. |
+| **Testcontainers** | Real PostgreSQL, not H2 — H2 does not reproduce the row-locking semantics the design depends on, so a passing H2 test would prove nothing. |
+| **LocalStack** | SNS locally. `endpointOverride` and static credentials are set **only** under the local profile; a real deployment uses the default AWS credential chain. |
+| **logstash-logback-encoder** | JSON logs with the MDC correlation id as a field. The human-readable appender is on the local profile. |
+| **Micrometer** | Histograms with explicit SLO buckets rather than default ones, which multiply series count for no benefit. |
+| **springdoc-openapi** | Generates the spec from the annotations already on the controller. |
 
 ---
 
@@ -156,23 +241,88 @@ logstash-logback-encoder; springdoc; Micrometer]_
 
 ### Out of scope per the brief
 
-- **Security.** No authentication or authorisation. `X-Client-Id` is self-asserted and
-  would be replaced by an authenticated principal.
+Security. There is no authentication or authorisation — `X-Client-Id` is self-asserted and
+would be replaced by an authenticated principal. The actuator is bound to its own port so
+the operator endpoint is not reachable from where withdrawals arrive, but that is a
+deployment boundary, not a control.
 
-### In scope, deliberately not built
+### In scope, and deliberately not built
 
-_[reversals; available vs ledger balance and holds; limits/velocity; customer entity and
-what it means for the AML consumer; multi-currency and the settlement account per currency;
-value dating]_
+| Not built | Why it matters | Why not now |
+|---|---|---|
+| **Reversals / contra entries** | There is no way to back out a withdrawal at all | Needs a reason taxonomy, a link from reversing to reversed, and a rule on whether a reversal can itself be reversed. Not a small addition, and the ledger is append-only precisely so this is the only correct shape. |
+| **Available vs ledger balance** | No holds or authorisations — one balance does both jobs | Changes the debit predicate and the whole balance model |
+| **Value dating** | `created_at` is the booking instant. Banking separates booking date, value date and business date; backdating a correction is impossible | Interest is out of scope here, which is the main thing value dating serves |
+| **Limits and velocity** | Nothing blocks on a daily limit or an AML threshold | Limits are per *customer*, and there is no customer entity — see below |
+| **Customer entity** | Accounts have no owner | This is the gap I'd close first, and the honest consequence is below |
+| **Multi-currency** | Non-ZAR accounts are refused, not supported | Needs a settlement account per currency; a ledger pair cannot debit in one currency and credit in another and still balance |
+
+**The one worth stating plainly:** the event exists for AML and FICA monitoring, and it
+carries `accountId` only. Structuring — splitting one large cash transaction into several
+below the reporting threshold — is detectable only by aggregating across a customer's
+accounts. As built, a downstream AML consumer structurally cannot do that. The service
+publishes for a purpose it cannot yet serve, and the customer entity is what fixes it.
 
 ### Assumptions encoded as constants
 
-_[scale 2, ZAR, two ledger legs, one settlement account, 24h idempotency TTL — each a
-business fact in code rather than data with a rule attached; right at this size, and the
-set worth naming]_
+Scale 2 · ZAR · two ledger legs per transaction · one settlement account · ACTIVE-or-refuse
+· a 24-hour idempotency TTL · 03:00 for the nightly jobs.
 
----
+Each is a business fact living in code rather than data with a rule attached. At this size
+that is the right trade. Two are worth knowing about:
 
-## 7. Cold review findings
+- **The idempotency TTL is a correctness setting, not housekeeping.** Past it, the same key
+  is a *fresh* key and a late retry withdraws again. Shortening it to reclaim storage
+  reintroduces double-debits silently, which is why it now carries a `@Min` and says so in
+  three places.
+- **Two legs is the write path, not the control.** Reconciliation sums per `transaction_id`
+  and already validates an n-leg transaction correctly — a withdrawal with a fee and VAT is
+  four legs. Only `recordWithdrawal` is fixed at a pair.
 
-_[pending]_
+### What I would cut
+
+If told to make this smaller, in order:
+
+1. **The incremental reconciliation pass.** The daily full sweep is fifteen lines, has no
+   watermark and no lease, and is correct. The incremental pass is the trickiest code here
+   and carries the defect in §7.
+2. **The third outbox interface.** Splitting `OutboxAppender` off the rest is real — it is
+   the only part on the money path. Splitting the remainder into relay and operations is
+   textbook rather than situational.
+3. **The mock-based service tests.** `AccountStateRulesIT` covers the same branches against
+   real PostgreSQL.
+
+## 7. Independent review
+
+I had the finished repository reviewed against the brief by a reviewer with no part in
+writing it, and asked it to verify claims rather than accept them. It checked ten technical
+assertions against a live PostgreSQL 16 and mutated five mechanisms to confirm the tests
+caught their removal. All five mutants were killed.
+
+Three assertions were wrong, and all three were in comments rather than code:
+
+| Claim | Reality |
+|---|---|
+| `lock_timeout` returns 503 | It returned **500**. `55P03` mapped to `CannotAcquireLockException` under the old translator; Spring Framework 6.1 replaced the default with one that has no mapping for SQLSTATE class 55, so it arrived as `UncategorizedSQLException` — not transient, so `@Retryable` ignored it and the lock handler never ran. The comment described Boot 2 behaviour on a Boot 3.3 stack. Fixed, and now tested. |
+| `DO UPDATE` takes a row lock where `DO NOTHING` does not | Both block, on the speculative-insertion token: 2.16s against 2.19s, measured. The conclusion was right and the reason was invented. What `DO UPDATE` actually buys is the TTL re-claim. |
+| The backoff cap fixed the overflow | It moved it. `LEAST` evaluates both arguments, so `POWER(2, n)` overflows double precision at n=1024 before the cap can clamp it — about three and a half days of sustained outage, which is exactly the scenario the no-attempt-limit design exists to survive. The exponent is capped now, not just the result. |
+
+Also acted on: unvalidated configuration (`idempotency-ttl-hours: 0` silently disables
+idempotency), the demo seed sitting on the default migration path so it would run in any
+environment, a requeue-everything operation that was a worse control than the manual
+`UPDATE` it replaced, metrics that were blind to infrastructure failures, and reconciliation
+summing across currencies.
+
+**One finding I have not fixed, on purpose.** The incremental pass takes its watermark from
+`MAX(id)` over `ledger_entry`, but `BIGSERIAL` allocates ids at insert and publishes them at
+commit — and commits land out of allocation order. A withdrawal committing after a
+reconciliation snapshot has already read past its ids is skipped by the incremental pass
+permanently. The daily full sweep still catches it, so exposure is bounded at 24 hours
+rather than unbounded.
+
+The real lesson is that **a sequence id is not a visibility watermark**. The fixes are a
+timestamp watermark with a safety lag, `pg_snapshot_xmin(pg_current_snapshot())`, or a
+nullable `reconciled_at` column with a partial index — the last of which is what I'd reach
+for, because it is the only one with no correctness parameter to tune. I left it because
+removing a migration, a lease and a test on the eve of submission is how something breaks
+quietly, and because the pass is first on my list in §6 to be cut entirely.

@@ -40,17 +40,43 @@ legs, the idempotency record and the outbox event. That single property is what
 makes the dual-write problem, the audit trail and idempotency safety all fall out
 of one mechanism instead of three.
 
+```mermaid
+flowchart LR
+    Client(["Client"])
+
+    subgraph SVC["withdrawal-service"]
+        direction TB
+        API["WithdrawalController<br/>/v1/bank/withdraw"]
+        APP["WithdrawalService<br/><i>retry boundary</i>"]
+        TXN["WithdrawalTransaction<br/><b>the unit of work</b>"]
+        RELAY["OutboxRelay<br/><i>poll 2s</i>"]
+        RECON["ReconciliationJob<br/><i>incremental + daily sweep</i>"]
+        API --> APP --> TXN
+    end
+
+    subgraph DB[("PostgreSQL")]
+        direction TB
+        ACC["accounts"]
+        LED["ledger_entry<br/><i>append-only</i>"]
+        OBX["outbox_event"]
+        IDK["idempotency_key"]
+    end
+
+    SNS(["AWS SNS"])
+    CONS["AML · fraud · notification · statements"]
+
+    Client --> API
+    TXN --> ACC & LED & OBX & IDK
+    RELAY --> OBX
+    RELAY --> SNS --> CONS
+    RECON --> ACC & LED
+
+    classDef store fill:#f6f8fa,stroke:#8b949e
+    class DB store
 ```
-POST /v1/bank/withdraw
-   └── claim idempotency key        (ON CONFLICT DO UPDATE — fails fast, before money moves)
-   └── atomic conditional debit     (one statement: status + funds + write, RETURNING new balance)
-   └── double-entry ledger          (DEBIT customer / CREDIT settlement, same transaction_id)
-   └── outbox row                   (the event, as data)
-   └── store response               (for idempotent replay)
-   COMMIT
-        ↓ (asynchronously, separate transaction)
-   OutboxRelay  ──FOR UPDATE SKIP LOCKED──▶  SNS
-```
+
+One transaction covers all four writes. The relay and the reconciliation run
+afterwards, on their own schedules, and never on the request path.
 
 ### The concurrency fix
 
