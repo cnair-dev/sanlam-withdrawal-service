@@ -181,4 +181,5 @@ X
 wait
 grep -E 'ERROR|UPDATE [0-9]' b.log | sed 's/^/  /'
 
+rm -f a.log b.log
 echo; echo "cleanup: docker rm -f $C"

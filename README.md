@@ -103,7 +103,7 @@ management port: `http://localhost:9090/actuator`.
 ## Verifying it
 
 ```bash
-./mvnw verify                 # 60 tests — 31 unit, 29 integration
+./mvnw verify                 # 59 tests — 31 unit, 28 integration
 ```
 
 Integration tests run against real PostgreSQL via Testcontainers, not H2, because H2 does

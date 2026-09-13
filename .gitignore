@@ -3,3 +3,6 @@ target/
 .idea/
 *.iml
 .DS_Store
+
+# Scratch output from scripts/verify_db_claims.sh
+*.log
