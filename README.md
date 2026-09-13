@@ -4,9 +4,21 @@ Improvement of the supplied bank-withdrawal snippet. The business capability is 
 debit an account if it can cover the amount, then emit a withdrawal event — but it is now
 correct under concurrency, atomic with its event, auditable and observable.
 
-**[APPROACH.md](APPROACH.md) is the write-up**: what was wrong with the original, why each
-choice was made, what I deliberately did not build, and what an independent review found.
-This file is how to run it and where things live.
+## → [APPROACH.md](APPROACH.md) is the submission
+
+The brief asks for four things. They are all there, in that order:
+
+| Asked for | Where |
+|---|---|
+| An outline of the approach, business capability unchanged | [§1](APPROACH.md) — including what the original *actually* does, which is not quite what it looks like |
+| Elaboration on implementation choices | [§3](APPROACH.md) |
+| The fixed code | [§4](APPROACH.md), and this repository |
+| Any unclear library usage documented | [§5](APPROACH.md) — the original's, and the rewrite's |
+
+It also covers what I deliberately did **not** build and why ([§6](APPROACH.md)), and what
+an independent review found ([§7](APPROACH.md)).
+
+This file is the repository: how to run it, how to check the claims, where things live.
 
 Java 21 · Spring Boot 3.3.5 · PostgreSQL (JdbcClient + Flyway) · AWS SNS · Testcontainers
 
